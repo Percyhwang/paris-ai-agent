@@ -3,11 +3,11 @@ import { useAuth } from "../../store/AuthContext";
 import { HomeLogo } from "./HomeLogo";
 
 const navItems = [
-  { to: "/places", label: "파리 관광지" },
-  { to: "/trip-plan", label: "여행 계획" },
-  { to: "/reservations", label: "예약 관리" },
-  { to: "/budget", label: "여행 예산" },
-  { to: "/diary", label: "여행 다이어리" },
+  { to: "/places", label: "파리 스팟" },
+  { to: "/trip-plan", label: "여행 플랜" },
+  { to: "/reservations", label: "예약 체크" },
+  { to: "/budget", label: "예산" },
+  { to: "/diary", label: "여행 기록" },
   { to: "/weather", label: "파리 날씨" },
 ];
 
@@ -19,6 +19,8 @@ export function Navbar() {
     logout();
     navigate("/");
   }
+
+  const avatarFallback = user?.name?.trim()?.charAt(0)?.toUpperCase() || "P";
 
   return (
     <nav className="navbar">
@@ -33,7 +35,7 @@ export function Navbar() {
       <div className="nav-user">
         {isAuthenticated && user ? (
           <>
-            {user.profile_image ? <img src={user.profile_image} alt={user.name} /> : <span className="avatar-fallback">P</span>}
+            {user.profile_image ? <img src={user.profile_image} alt={user.name} /> : <span className="avatar-fallback">{avatarFallback}</span>}
             <span>{user.name}</span>
             <button type="button" className="ghost-button small" onClick={handleLogout}>
               로그아웃
