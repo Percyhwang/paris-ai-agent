@@ -1,0 +1,44 @@
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    app_name: str = "Paris AI Agent API"
+    app_env: str = "local"
+    api_prefix: str = "/api"
+
+    mongodb_uri: str = "mongodb://localhost:27017"
+    mongodb_db: str = "paris_ai_agent"
+    frontend_origin: str = "http://localhost:5173"
+
+    google_client_id: str | None = None
+    jwt_private_key: str | None = None
+    jwt_public_key: str | None = None
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 14
+    allow_insecure_dev_auth: bool = True
+
+    weather_api_url: str | None = None
+    external_agent_api_url: str | None = None
+    llm_diary_api_url: str | None = None
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.frontend_origin.split(",") if origin.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
