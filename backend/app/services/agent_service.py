@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.schemas.trips import TripGenerateRequest
+from app.services.route_optimizer_service import optimize_trip_payload
 
 DEFAULT_COORDINATES: dict[str, dict[str, float]] = {
     "Eiffel Tower": {"lat": 48.8584, "lng": 2.2945},
@@ -42,15 +43,33 @@ DEFAULT_PLACE_ROTATION = [
 ]
 
 
-async def generate_trip_payload(request: TripGenerateRequest, language: str = "ko") -> dict[str, Any]:
+async def generate_trip_payload(
+    request: TripGenerateRequest,
+    language: str = "ko",
+    db: Any | None = None,
+) -> dict[str, Any]:
     if settings.external_agent_api_url:
-        return await _generate_with_external_agent(request, language=language)
+        payload = await _generate_with_external_agent(request, language=language)
+        return await _optimize_payload_if_possible(db, payload, request, language)
 
     local_agent_response = _run_local_agent(request, language=language)
     if local_agent_response is not None:
-        return _generated_payload_from_agent_response(local_agent_response, request, language=language)
+        payload = _generated_payload_from_agent_response(local_agent_response, request, language=language)
+        return await _optimize_payload_if_possible(db, payload, request, language)
 
-    return _mock_trip_payload(request, language=language)
+    payload = _mock_trip_payload(request, language=language)
+    return await _optimize_payload_if_possible(db, payload, request, language)
+
+
+async def _optimize_payload_if_possible(
+    db: Any | None,
+    payload: dict[str, Any],
+    request: TripGenerateRequest,
+    language: str,
+) -> dict[str, Any]:
+    if db is None:
+        return payload
+    return await optimize_trip_payload(db, payload, prompt=request.prompt, language=language)
 
 
 async def _generate_with_external_agent(request: TripGenerateRequest, language: str) -> dict[str, Any]:

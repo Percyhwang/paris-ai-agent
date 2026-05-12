@@ -36,6 +36,29 @@ class ItineraryPlace(BaseModel):
     category: str | None = None
 
 
+class RouteStep(BaseModel):
+    instruction: str
+    travel_mode: str | None = None
+    line_name: str | None = None
+    line_short_name: str | None = None
+    vehicle_type: str | None = None
+    departure_stop: str | None = None
+    arrival_stop: str | None = None
+    duration_text: str | None = None
+    stop_count: int | None = None
+
+
+class RouteLeg(BaseModel):
+    mode: str
+    summary: str
+    distance_meters: int | None = None
+    duration_seconds: int | None = None
+    duration_text: str
+    steps: list[RouteStep] = Field(default_factory=list)
+    transit_lines: list[str] = Field(default_factory=list)
+    fallback: bool = False
+
+
 class ItineraryItem(BaseModel):
     id: str | None = None
     time_slot: Literal["morning", "lunch", "afternoon", "evening"]
@@ -44,6 +67,7 @@ class ItineraryItem(BaseModel):
     place: ItineraryPlace
     description: str
     estimated_duration: str
+    route_to_next: RouteLeg | None = None
 
 
 class ItineraryDay(BaseModel):

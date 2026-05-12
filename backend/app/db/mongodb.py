@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from app.core.config import settings
+from app.services.place_repository_service import ensure_places_seed_data
 
 client: AsyncIOMotorClient | None = None
 database: AsyncIOMotorDatabase | None = None
@@ -20,6 +21,7 @@ async def connect_to_mongo() -> None:
         database = client[settings.mongodb_db]
         await database.command("ping")
         await _ensure_indexes(database)
+        await ensure_places_seed_data(database)
         mongo_startup_error = None
     except Exception as exc:
         mongo_startup_error = str(exc)
@@ -65,3 +67,8 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.budget_summary.create_index("trip_id", unique=True)
     await db.diary_entry.create_index([("trip_id", 1), ("entry_date", -1)])
     await db.weather_cache.create_index("expires_at", expireAfterSeconds=0)
+    await db.places.create_index("slug")
+    await db.places.create_index("category")
+    await db.places.create_index("name")
+    await db.places.create_index("source")
+    await db.places.create_index([("location", "2dsphere")])

@@ -71,7 +71,29 @@ Stores timeline data per trip day.
         "coordinates": { "lat": 48.8584, "lng": 2.2945 }
       },
       "description": "string",
-      "estimated_duration": "string"
+      "estimated_duration": "string",
+      "route_to_next": {
+        "mode": "walk|transit|mixed",
+        "summary": "string",
+        "distance_meters": 1200,
+        "duration_seconds": 900,
+        "duration_text": "15분",
+        "transit_lines": ["69", "C"],
+        "steps": [
+          {
+            "instruction": "string",
+            "travel_mode": "walk|transit",
+            "line_name": "string|null",
+            "line_short_name": "string|null",
+            "vehicle_type": "BUS|SUBWAY|COMMUTER_TRAIN|null",
+            "departure_stop": "string|null",
+            "arrival_stop": "string|null",
+            "duration_text": "string|null",
+            "stop_count": 3
+          }
+        ],
+        "fallback": false
+      }
     }
   ],
   "created_at": "datetime",
@@ -151,29 +173,36 @@ Stores user-created or LLM-assisted travel diary entries.
 }
 ```
 
-## place_catalog
+## places
 
-Stores searchable Paris landmark catalog data. Seed data is inserted on startup if the collection is empty.
+Stores searchable Paris place data used by the route optimizer. Canonical Paris landmarks are upserted on startup, and OSM seed data is inserted if no OSM places exist.
 
 ```json
 {
   "_id": "ObjectId",
-  "slug": "string unique",
+  "slug": "string",
   "name": "string",
-  "category": "landmark|museum|cathedral|park|neighborhood",
+  "category": "landmark|museum|park|shopping|cafe|restaurant",
   "coordinates": { "lat": 48.8584, "lng": 2.2945 },
-  "image_url": "string",
-  "short_description": "string",
-  "full_description": "string",
-  "history": "string",
-  "photo_spot_tips": ["string"],
-  "estimated_visit_duration": "string",
-  "admission_fee": "string|null",
-  "location": "string",
-  "tags": ["string"],
-  "popularity": 100
+  "location": {
+    "type": "Point",
+    "coordinates": [2.2945, 48.8584]
+  },
+  "aliases": ["string"],
+  "source": "canonical|osm|google_places_new",
+  "popularity": 100,
+  "created_at": "datetime",
+  "updated_at": "datetime"
 }
 ```
+
+Indexes:
+
+- `slug`
+- `category`
+- `name`
+- `source`
+- `location` as `2dsphere`
 
 ## weather_cache
 

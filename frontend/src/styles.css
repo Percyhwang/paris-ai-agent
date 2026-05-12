@@ -1760,6 +1760,132 @@ textarea {
   box-shadow: 0 12px 30px rgba(72, 45, 30, 0.1);
 }
 
+.route-leg-card {
+  display: grid;
+  grid-template-columns: 72px 16px 1fr;
+  gap: 12px;
+  align-items: stretch;
+  margin-top: -4px;
+}
+
+.route-leg-time {
+  display: grid;
+  align-content: start;
+  justify-items: end;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.route-leg-time strong {
+  color: var(--blue);
+}
+
+.route-leg-line {
+  position: relative;
+}
+
+.route-leg-line::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 1px;
+  height: calc(100% + 10px);
+  background: rgba(66, 93, 123, 0.22);
+  transform: translateX(-50%);
+}
+
+.route-leg-line::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--blue);
+  transform: translateX(-50%);
+}
+
+.route-leg-body {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(66, 93, 123, 0.16);
+  border-radius: 14px;
+  padding: 11px 12px;
+  background: rgba(244, 248, 249, 0.72);
+}
+
+.route-leg-head {
+  display: grid;
+  gap: 7px;
+}
+
+.route-leg-head strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.32;
+}
+
+.route-chip-row,
+.route-line-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.route-chip-row span,
+.route-line-chips span {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.route-chip-row span {
+  color: var(--blue);
+  background: rgba(66, 93, 123, 0.11);
+}
+
+.route-line-chips span {
+  color: #fffaf2;
+  background: var(--blue);
+}
+
+.route-step-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.route-step-list li {
+  padding-left: 2px;
+}
+
+.route-step-list li::marker {
+  color: var(--blue);
+  font-weight: 900;
+}
+
+.route-step-list span {
+  display: block;
+  line-height: 1.45;
+}
+
+.route-step-list small {
+  color: var(--blue);
+  font-weight: 900;
+}
+
 .trip-selector {
   display: grid;
   gap: 6px;
@@ -2216,6 +2342,7 @@ textarea {
 
   .form-row,
   .timeline-card,
+  .route-leg-card,
   .place-grid,
   .weather-grid {
     grid-template-columns: 1fr;
@@ -2252,6 +2379,14 @@ textarea {
   }
 
   .timeline-dot {
+    display: none;
+  }
+
+  .route-leg-time {
+    justify-items: start;
+  }
+
+  .route-leg-line {
     display: none;
   }
 

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     google_client_id: str | None = None
     google_places_api_key: str | None = None
+    google_routes_api_key: str | None = None
     jwt_private_key: str | None = None
     jwt_public_key: str | None = None
     access_token_expire_minutes: int = 30

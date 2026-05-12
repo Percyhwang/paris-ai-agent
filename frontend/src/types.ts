@@ -71,6 +71,29 @@ export type ItineraryPlace = {
   category?: string | null;
 };
 
+export type RouteStep = {
+  instruction: string;
+  travel_mode?: string | null;
+  line_name?: string | null;
+  line_short_name?: string | null;
+  vehicle_type?: string | null;
+  departure_stop?: string | null;
+  arrival_stop?: string | null;
+  duration_text?: string | null;
+  stop_count?: number | null;
+};
+
+export type RouteLeg = {
+  mode: string;
+  summary: string;
+  distance_meters?: number | null;
+  duration_seconds?: number | null;
+  duration_text: string;
+  steps: RouteStep[];
+  transit_lines: string[];
+  fallback: boolean;
+};
+
 export type ItineraryItem = {
   id?: string | null;
   time_slot: "morning" | "lunch" | "afternoon" | "evening";
@@ -79,6 +102,7 @@ export type ItineraryItem = {
   place: ItineraryPlace;
   description: string;
   estimated_duration: string;
+  route_to_next?: RouteLeg | null;
 };
 
 export type ItineraryDay = {

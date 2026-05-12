@@ -20,7 +20,7 @@ async def generate_trip(
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     language = normalize_language(request.headers.get("accept-language"))
-    generated = await generate_trip_payload(payload, language=language)
+    generated = await generate_trip_payload(payload, language=language, db=db)
     trip = await create_generated_trip(db, current_user["id"], generated)
     return api_ok(trip, "Trip generated")
 
