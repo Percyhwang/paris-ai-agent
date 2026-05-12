@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import get_current_user
+from app.core.i18n import normalize_language
 from app.core.responses import api_ok
-from app.db.mongodb import get_database
+from app.db.mongodb import get_database, get_optional_database
 from app.schemas.trips import TripCreate, TripGenerateRequest, TripUpdate
 from app.services.agent_service import generate_trip_payload
 from app.services.trip_service import create_generated_trip, create_trip, delete_trip, get_trip_detail, list_user_trips, update_trip
@@ -13,11 +14,13 @@ router = APIRouter()
 
 @router.post("/generate")
 async def generate_trip(
+    request: Request,
     payload: TripGenerateRequest,
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
-    generated = await generate_trip_payload(payload)
+    language = normalize_language(request.headers.get("accept-language"))
+    generated = await generate_trip_payload(payload, language=language)
     trip = await create_generated_trip(db, current_user["id"], generated)
     return api_ok(trip, "Trip generated")
 
@@ -34,19 +37,26 @@ async def create_trip_route(
 
 @router.get("")
 async def list_trips_route(
+    request: Request,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncIOMotorDatabase | None = Depends(get_optional_database),
 ) -> dict:
-    return api_ok(await list_user_trips(db, current_user["id"]))
+    if db is None:
+        return api_ok([])
+
+    language = normalize_language(request.headers.get("accept-language"))
+    return api_ok(await list_user_trips(db, current_user["id"], language=language))
 
 
 @router.get("/{trip_id}")
 async def get_trip_route(
+    request: Request,
     trip_id: str,
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
-    return api_ok(await get_trip_detail(db, current_user["id"], trip_id))
+    language = normalize_language(request.headers.get("accept-language"))
+    return api_ok(await get_trip_detail(db, current_user["id"], trip_id, language=language))
 
 
 @router.patch("/{trip_id}")

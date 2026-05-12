@@ -6,8 +6,7 @@ from fastapi.responses import JSONResponse
 from app.api.routes import api_router
 from app.core.config import settings
 from app.core.responses import api_error, api_ok
-from app.db.mongodb import close_mongo_connection, connect_to_mongo, get_database
-from app.services.place_service import ensure_place_seed_data
+from app.db.mongodb import close_mongo_connection, connect_to_mongo, get_database_status
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
@@ -24,7 +23,6 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup() -> None:
     await connect_to_mongo()
-    await ensure_place_seed_data(get_database())
 
 
 @app.on_event("shutdown")
@@ -52,7 +50,7 @@ async def validation_exception_handler(
 
 @app.get("/health")
 async def health() -> dict:
-    return api_ok({"service": settings.app_name, "environment": settings.app_env})
+    return api_ok({"service": settings.app_name, "environment": settings.app_env, "database": get_database_status()})
 
 
 app.include_router(api_router, prefix=settings.api_prefix)

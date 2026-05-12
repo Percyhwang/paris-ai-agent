@@ -7,15 +7,67 @@ import { TripSelector } from "../components/common/TripSelector";
 import { DiaryPhotoUploader } from "../components/diary/DiaryPhotoUploader";
 import { useTripSelection } from "../hooks/useTripSelection";
 import { diaryService, type DiaryInput } from "../services/diaryService";
+import { useLanguage } from "../store/LanguageContext";
 import type { DiaryEntry, DiaryGenerated } from "../types";
 import { formatDate, todayInputValue } from "../utils/format";
 
+const DIARY_COPY = {
+  ko: {
+    eyebrow: "일기",
+    title: "여행 다이어리",
+    description: "사진, 감정, 메모를 묶어 LLM 다이어리 생성 API로 보낼 수 있는 구조입니다.",
+    loading: "다이어리를 불러오는 중입니다",
+    loadError: "다이어리를 불러오지 못했습니다.",
+    generateError: "다이어리 생성에 실패했습니다.",
+    noTripsTitle: "다이어리를 연결할 여행이 없습니다",
+    noTripsDescription: "먼저 여행 계획을 생성해 주세요.",
+    formTitle: "오늘의 기억 입력",
+    placePlaceholder: "장소 (선택)",
+    emotionPlaceholder: "감정 태그, 쉼표로 구분",
+    notesPlaceholder: "오늘 기억하고 싶은 장면을 적어 주세요.",
+    generate: "감성 다이어리 생성",
+    generated: "생성됨",
+    save: "저장하기",
+    defaultGeneratedTitle: "파리 여행 기록",
+    defaultPlace: "파리",
+    defaultEntryTitle: "여행 기록",
+    savedPhotoAlt: "저장된 사진",
+    emptyTitle: "저장된 다이어리가 없습니다",
+    emptyDescription: "사진과 감정을 입력해 첫 파리 여행 일기를 만들어 보세요.",
+  },
+  en: {
+    eyebrow: "Diary",
+    title: "Trip Diary",
+    description: "Combine photos, emotions, and notes before sending them to the diary generation API.",
+    loading: "Loading diary...",
+    loadError: "Could not load diary entries.",
+    generateError: "Could not generate the diary entry.",
+    noTripsTitle: "No trip is available for diary entries",
+    noTripsDescription: "Create a trip plan first.",
+    formTitle: "Capture Today's Memory",
+    placePlaceholder: "Place (optional)",
+    emotionPlaceholder: "Emotion tags, separated by commas",
+    notesPlaceholder: "Write a moment you want to remember from today.",
+    generate: "Generate diary",
+    generated: "Generated",
+    save: "Save",
+    defaultGeneratedTitle: "Paris Trip Note",
+    defaultPlace: "Paris",
+    defaultEntryTitle: "Trip Note",
+    savedPhotoAlt: "Saved photo",
+    emptyTitle: "No diary entries saved",
+    emptyDescription: "Add photos and emotions to create your first Paris travel note.",
+  },
+} as const;
+
 export function DiaryPage() {
+  const { language } = useLanguage();
+  const copy = DIARY_COPY[language];
   const { trips, selectedTripId, setSelectedTripId, isLoading: isTripLoading } = useTripSelection();
   const [entries, setEntries] = useState<DiaryEntry[]>([]);
   const [entryDate, setEntryDate] = useState(todayInputValue());
   const [photos, setPhotos] = useState<string[]>([]);
-  const [emotionTags, setEmotionTags] = useState("설렘, 낭만");
+  const [emotionTags, setEmotionTags] = useState("");
   const [place, setPlace] = useState("");
   const [notes, setNotes] = useState("");
   const [generated, setGenerated] = useState<DiaryGenerated | null>(null);
@@ -33,7 +85,7 @@ export function DiaryPage() {
     try {
       setEntries(await diaryService.listEntries(tripId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "다이어리를 불러오지 못했습니다.");
+      setError(err instanceof Error ? err.message : copy.loadError);
     } finally {
       setIsLoading(false);
     }
@@ -43,7 +95,10 @@ export function DiaryPage() {
     return {
       entry_date: entryDate,
       photo_urls: photos,
-      emotion_tags: emotionTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      emotion_tags: emotionTags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
       notes,
       place: place || undefined,
     };
@@ -57,7 +112,7 @@ export function DiaryPage() {
     try {
       setGenerated(await diaryService.generateDiary(selectedTripId, buildInput()));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "다이어리 생성에 실패했습니다.");
+      setError(err instanceof Error ? err.message : copy.generateError);
     } finally {
       setIsLoading(false);
     }
@@ -68,9 +123,12 @@ export function DiaryPage() {
     const entry = await diaryService.createEntry(selectedTripId, {
       ...buildInput(),
       ...(generated ?? {
-        title: "파리 여행 기록",
+        title: copy.defaultGeneratedTitle,
         generated_diary_text: notes,
-        mood_keywords: emotionTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        mood_keywords: emotionTags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
       }),
     });
     setEntries((current) => [entry, ...current]);
@@ -81,29 +139,32 @@ export function DiaryPage() {
 
   return (
     <PageContainer
-      eyebrow="Diary"
-      title="여행 다이어리"
-      description="사진, 감정, 메모를 묶어 LLM 다이어리 생성 API로 보낼 수 있는 구조입니다."
+      eyebrow={copy.eyebrow}
+      title={copy.title}
+      description={copy.description}
+      theme="diary"
       action={<TripSelector trips={trips} selectedTripId={selectedTripId} onChange={setSelectedTripId} />}
     >
-      {isTripLoading || isLoading ? <LoadingState /> : null}
+      {isTripLoading || isLoading ? <LoadingState label={copy.loading} /> : null}
       {error ? <p className="form-error">{error}</p> : null}
-      {!isTripLoading && !trips.length ? <EmptyState title="다이어리를 연결할 여행이 없습니다" description="먼저 여행 계획을 생성해 주세요." /> : null}
+      {!isTripLoading && !trips.length ? <EmptyState title={copy.noTripsTitle} description={copy.noTripsDescription} /> : null}
       {selectedTripId ? (
         <div className="two-column-layout diary-layout">
           <Card>
-            <h2>오늘의 기억 입력</h2>
+            <h2>{copy.formTitle}</h2>
             <form className="stacked-form" onSubmit={handleGenerate}>
               <input type="date" value={entryDate} onChange={(event) => setEntryDate(event.target.value)} />
-              <input value={place} onChange={(event) => setPlace(event.target.value)} placeholder="장소 optional" />
-              <input value={emotionTags} onChange={(event) => setEmotionTags(event.target.value)} placeholder="감정 태그, 쉼표로 구분" />
+              <input value={place} onChange={(event) => setPlace(event.target.value)} placeholder={copy.placePlaceholder} />
+              <input value={emotionTags} onChange={(event) => setEmotionTags(event.target.value)} placeholder={copy.emotionPlaceholder} />
               <DiaryPhotoUploader photos={photos} onChange={setPhotos} />
-              <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="오늘 기억하고 싶은 장면을 적어주세요." />
-              <button type="submit" className="primary-button">감성 다이어리 생성</button>
+              <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={copy.notesPlaceholder} />
+              <button type="submit" className="primary-button">
+                {copy.generate}
+              </button>
             </form>
             {generated ? (
               <div className="generated-diary">
-                <span className="eyebrow">Generated</span>
+                <span className="eyebrow">{copy.generated}</span>
                 <h3>{generated.title}</h3>
                 <p>{generated.generated_diary_text}</p>
                 <div className="tag-row">
@@ -111,7 +172,9 @@ export function DiaryPage() {
                     <span key={keyword}>#{keyword}</span>
                   ))}
                 </div>
-                <button type="button" className="primary-button" onClick={handleSave}>저장하기</button>
+                <button type="button" className="primary-button" onClick={handleSave}>
+                  {copy.save}
+                </button>
               </div>
             ) : null}
           </Card>
@@ -119,18 +182,20 @@ export function DiaryPage() {
             {entries.length ? (
               entries.map((entry) => (
                 <Card key={entry.id} className="diary-entry-card">
-                  <span>{formatDate(entry.entry_date)} · {entry.place ?? "파리"}</span>
-                  <h3>{entry.title ?? "여행 기록"}</h3>
+                  <span>
+                    {formatDate(entry.entry_date, language)} · {entry.place ?? copy.defaultPlace}
+                  </span>
+                  <h3>{entry.title ?? copy.defaultEntryTitle}</h3>
                   <p>{entry.generated_diary_text ?? entry.notes}</p>
                   <div className="photo-preview-grid saved">
                     {entry.photo_urls.slice(0, 4).map((photo, index) => (
-                      <img key={photo.slice(0, 40) + index} src={photo} alt={`저장된 사진 ${index + 1}`} />
+                      <img key={photo.slice(0, 40) + index} src={photo} alt={`${copy.savedPhotoAlt} ${index + 1}`} />
                     ))}
                   </div>
                 </Card>
               ))
             ) : (
-              <EmptyState title="저장된 다이어리가 없습니다" description="사진과 감정을 입력해 첫 파리 여행 일기를 만들어보세요." />
+              <EmptyState title={copy.emptyTitle} description={copy.emptyDescription} />
             )}
           </section>
         </div>

@@ -1,13 +1,26 @@
+import { useLanguage } from "../../store/LanguageContext";
 import type { ItineraryDay } from "../../types";
+import { getPlaceCategoryLabel } from "../../utils/placeLabels";
 
-const timeSlotLabels = {
-  morning: "오전",
-  lunch: "점심",
-  afternoon: "오후",
-  evening: "저녁",
-};
+const TIME_SLOT_LABELS = {
+  ko: {
+    morning: "오전",
+    lunch: "점심",
+    afternoon: "오후",
+    evening: "저녁",
+  },
+  en: {
+    morning: "Morning",
+    lunch: "Lunch",
+    afternoon: "Afternoon",
+    evening: "Evening",
+  },
+} as const;
 
 export function Timeline({ day }: { day: ItineraryDay }) {
+  const { language } = useLanguage();
+  const timeSlotLabels = TIME_SLOT_LABELS[language];
+
   return (
     <div className="timeline">
       {day.items.map((item) => (
@@ -23,7 +36,7 @@ export function Timeline({ day }: { day: ItineraryDay }) {
             <div className="info-strip small-strip">
               <span>{item.place.name}</span>
               <span>{item.estimated_duration}</span>
-              {item.place.category ? <span>{item.place.category}</span> : null}
+              {item.place.category ? <span>{getPlaceCategoryLabel(item.place.category, language)}</span> : null}
             </div>
           </div>
         </article>

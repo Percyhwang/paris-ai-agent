@@ -3,14 +3,16 @@ type PageContainerProps = {
   title: string;
   description?: string;
   action?: React.ReactNode;
+  theme?: "places" | "trip" | "reservation" | "budget" | "diary" | "weather";
   children: React.ReactNode;
 };
 
-export function PageContainer({ eyebrow, title, description, action, children }: PageContainerProps) {
+export function PageContainer({ eyebrow, title, description, action, theme = "trip", children }: PageContainerProps) {
   return (
     <main className="page-shell">
-      <header className="page-header">
-        <div>
+      <header className={`page-header page-header-${theme}`}>
+        <div className="page-header-mark" aria-hidden="true" />
+        <div className="page-header-copy">
           {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
           <h1>{title}</h1>
           {description ? <p>{description}</p> : null}

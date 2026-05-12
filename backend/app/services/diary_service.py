@@ -9,14 +9,31 @@ from app.schemas.diary import DiaryCreate, DiaryGenerateRequest
 from app.services.trip_service import ensure_trip_ownership
 
 
-async def generate_diary(payload: DiaryGenerateRequest) -> dict:
+async def generate_diary(payload: DiaryGenerateRequest, language: str = "ko") -> dict:
     if settings.llm_diary_api_url:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(settings.llm_diary_api_url, json=payload.model_dump(mode="json"))
+            response = await client.post(
+                settings.llm_diary_api_url,
+                json=payload.model_dump(mode="json"),
+                headers={"Accept-Language": language},
+            )
             response.raise_for_status()
             return response.json()
 
-    emotions = ", ".join(payload.emotion_tags) if payload.emotion_tags else "설렘"
+    emotions = ", ".join(payload.emotion_tags) if payload.emotion_tags else ("excited" if language == "en" else "설렘")
+    if language == "en":
+        place = payload.place or "a quiet Paris side street"
+        note = payload.notes or "the moments in the photos lingered for a long time."
+        return {
+            "title": f"A {emotions} day in {place}",
+            "generated_diary_text": (
+                f"Paris on {payload.entry_date} feels soft in memory. "
+                f"The {emotions} feeling from {place} stayed between the photos, and {note} "
+                "Slowing down for a moment made the small light and breeze feel like part of the day."
+            ),
+            "mood_keywords": payload.emotion_tags or ["romantic", "calm", "paris"],
+        }
+
     place = payload.place or "파리의 어느 골목"
     note = payload.notes or "사진 속 순간들이 오래 남았다."
     return {

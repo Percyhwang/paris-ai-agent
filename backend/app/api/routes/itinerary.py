@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import get_current_user
+from app.core.i18n import normalize_language
 from app.core.responses import api_ok
 from app.db.mongodb import get_database
 from app.schemas.trips import ItineraryUpdate
@@ -12,11 +13,13 @@ router = APIRouter()
 
 @router.get("/{trip_id}/itinerary")
 async def get_itinerary_route(
+    request: Request,
     trip_id: str,
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
-    return api_ok(await get_itinerary(db, current_user["id"], trip_id))
+    language = normalize_language(request.headers.get("accept-language"))
+    return api_ok(await get_itinerary(db, current_user["id"], trip_id, language=language))
 
 
 @router.put("/{trip_id}/itinerary")

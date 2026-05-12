@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import get_current_user
+from app.core.i18n import normalize_language
 from app.core.responses import api_ok
 from app.db.mongodb import get_database
 from app.schemas.diary import DiaryCreate, DiaryGenerateRequest
@@ -32,6 +33,7 @@ async def list_diary_route(
 
 @router.post("/{trip_id}/diary/generate")
 async def generate_diary_route(
+    request: Request,
     trip_id: str,
     payload: DiaryGenerateRequest,
     current_user: dict = Depends(get_current_user),
@@ -40,5 +42,6 @@ async def generate_diary_route(
     from app.services.trip_service import ensure_trip_ownership
 
     await ensure_trip_ownership(db, current_user["id"], trip_id)
-    generated = await generate_diary(payload)
+    language = normalize_language(request.headers.get("accept-language"))
+    generated = await generate_diary(payload, language=language)
     return api_ok(generated, "Diary generated")

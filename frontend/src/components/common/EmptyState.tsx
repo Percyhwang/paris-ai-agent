@@ -7,7 +7,7 @@ type EmptyStateProps = {
 export function EmptyState({ title, description, action }: EmptyStateProps) {
   return (
     <div className="empty-state">
-      <span>🧳</span>
+      <span>✨</span>
       <h3>{title}</h3>
       <p>{description}</p>
       {action ? <div>{action}</div> : null}

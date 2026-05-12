@@ -11,9 +11,17 @@ class Settings(BaseSettings):
 
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_db: str = "paris_ai_agent"
-    frontend_origin: str = "http://localhost:5173"
+    frontend_origin: str = ",".join(
+        [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
+        ]
+    )
 
     google_client_id: str | None = None
+    google_places_api_key: str | None = None
     jwt_private_key: str | None = None
     jwt_public_key: str | None = None
     access_token_expire_minutes: int = 30
@@ -21,6 +29,7 @@ class Settings(BaseSettings):
     allow_insecure_dev_auth: bool = True
 
     weather_api_url: str | None = None
+    weather_cache_ttl_minutes: int = 30
     external_agent_api_url: str | None = None
     llm_diary_api_url: str | None = None
 

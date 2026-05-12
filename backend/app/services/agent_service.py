@@ -1,4 +1,10 @@
+from __future__ import annotations
+
+import sys
 from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -7,133 +13,517 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.schemas.trips import TripGenerateRequest
 
+DEFAULT_COORDINATES: dict[str, dict[str, float]] = {
+    "Eiffel Tower": {"lat": 48.8584, "lng": 2.2945},
+    "Louvre Museum": {"lat": 48.8606, "lng": 2.3376},
+    "Musee d'Orsay": {"lat": 48.86, "lng": 2.3266},
+    "Notre-Dame": {"lat": 48.853, "lng": 2.3499},
+    "Montmartre": {"lat": 48.8867, "lng": 2.3431},
+    "Le Marais": {"lat": 48.8575, "lng": 2.358},
+    "Luxembourg Gardens": {"lat": 48.8462, "lng": 2.3372},
+    "Seine River": {"lat": 48.8583, "lng": 2.3375},
+}
 
-async def generate_trip_payload(request: TripGenerateRequest) -> dict:
+THEME_PLACE_POOL: dict[str, list[str]] = {
+    "museum": ["Louvre Museum", "Musee d'Orsay"],
+    "cafe": ["Saint-Germain cafe walk", "Le Marais cafe stop"],
+    "shopping": ["Le Bon Marche", "Galeries Lafayette"],
+    "night_view": ["Eiffel Tower", "Seine River"],
+    "park": ["Luxembourg Gardens", "Tuileries Garden"],
+}
+
+DEFAULT_PLACE_ROTATION = [
+    "Louvre Museum",
+    "Notre-Dame",
+    "Le Marais",
+    "Montmartre",
+    "Luxembourg Gardens",
+    "Eiffel Tower",
+]
+
+
+async def generate_trip_payload(request: TripGenerateRequest, language: str = "ko") -> dict[str, Any]:
     if settings.external_agent_api_url:
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                response = await client.post(settings.external_agent_api_url, json=request.model_dump(mode="json"))
-                response.raise_for_status()
-                return response.json()
-            except httpx.HTTPError as exc:
-                raise HTTPException(status_code=502, detail="External agent API failed") from exc
+        return await _generate_with_external_agent(request, language=language)
 
-    return _mock_trip_payload(request)
+    local_agent_response = _run_local_agent(request, language=language)
+    if local_agent_response is not None:
+        return _generated_payload_from_agent_response(local_agent_response, request, language=language)
+
+    return _mock_trip_payload(request, language=language)
 
 
-def _mock_trip_payload(request: TripGenerateRequest) -> dict:
+async def _generate_with_external_agent(request: TripGenerateRequest, language: str) -> dict[str, Any]:
+    url = settings.external_agent_api_url
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            response = await client.post(
+                url,
+                json=_external_agent_request_body(url, request, language=language),
+                headers={"Accept-Language": language},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="External agent API failed") from exc
+
+    return _normalize_agent_payload(response.json(), request, language=language)
+
+
+def _run_local_agent(request: TripGenerateRequest, language: str) -> dict[str, Any] | None:
+    _ensure_repo_root_on_path()
+    try:
+        from parser_api.schemas import AgentRunRequest
+        from parser_api.services.agent_service import run_agent
+    except ModuleNotFoundError:
+        return None
+
+    response = run_agent(
+        AgentRunRequest(
+            message=request.prompt,
+            context=_agent_context_from_request(request, language=language),
+        )
+    )
+    return response.model_dump()
+
+
+def _ensure_repo_root_on_path() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    repo_root_path = str(repo_root)
+    if repo_root_path not in sys.path:
+        sys.path.append(repo_root_path)
+
+
+def _external_agent_request_body(url: str, request: TripGenerateRequest, language: str) -> dict[str, Any]:
+    path = urlparse(url).path.rstrip("/")
+    if path.endswith("/agent/run"):
+        return {
+            "message": request.prompt,
+            "context": _agent_context_from_request(request, language=language),
+        }
+    return request.model_dump(mode="json")
+
+
+def _agent_context_from_request(request: TripGenerateRequest, language: str) -> dict[str, Any]:
+    return {
+        "source": "frontend",
+        "language": language,
+        "start_date": _date_to_iso(request.start_date),
+        "end_date": _date_to_iso(request.end_date),
+        "total_days": request.total_days,
+        "style_tags": list(request.style_tags),
+    }
+
+
+def _normalize_agent_payload(
+    raw_payload: dict[str, Any],
+    request: TripGenerateRequest,
+    language: str,
+) -> dict[str, Any]:
+    payload = raw_payload
+    if isinstance(payload.get("success"), bool):
+        if not payload["success"]:
+            raise HTTPException(status_code=502, detail=str(payload.get("message") or "Agent API failed"))
+        payload = dict(payload.get("data") or {})
+
+    if "trip" in payload and "itinerary_days" in payload:
+        return _normalize_generated_payload(payload, request, language=language)
+
+    if "trip_title" in payload and "itinerary_days" in payload:
+        return _generated_payload_from_frontend_trip(payload, request, language=language)
+
+    if "status" in payload and "data" in payload:
+        return _generated_payload_from_agent_response(payload, request, language=language)
+
+    raise HTTPException(status_code=502, detail="Agent API returned an unsupported response shape")
+
+
+def _normalize_generated_payload(
+    payload: dict[str, Any],
+    request: TripGenerateRequest,
+    language: str,
+) -> dict[str, Any]:
+    trip = dict(payload.get("trip") or {})
+    trip.setdefault("trip_title", _title_from_prompt(request.prompt, _resolve_total_days(request, {}), language))
+    trip.setdefault("prompt", request.prompt)
+    trip.setdefault("total_days", _resolve_total_days(request, {}))
+    trip.setdefault("style_tags", list(request.style_tags) or _infer_tags(request.prompt))
+    trip.setdefault("status", "generated")
+    trip.setdefault("route_summary", _copy(language, "Agent-generated Paris itinerary draft.", "Agent가 생성한 파리 일정 초안입니다."))
+    return {
+        "trip": trip,
+        "itinerary_days": list(payload.get("itinerary_days") or []),
+        "budget": dict(payload.get("budget") or _budget_from_days(int(trip.get("total_days") or 1))),
+    }
+
+
+def _generated_payload_from_frontend_trip(
+    trip: dict[str, Any],
+    request: TripGenerateRequest,
+    language: str,
+) -> dict[str, Any]:
+    total_days = int(trip.get("total_days") or _resolve_total_days(request, {}))
+    return {
+        "trip": {
+            "trip_title": trip.get("trip_title") or _title_from_prompt(request.prompt, total_days, language),
+            "prompt": trip.get("prompt") or request.prompt,
+            "start_date": trip.get("start_date"),
+            "end_date": trip.get("end_date"),
+            "total_days": total_days,
+            "style_tags": list(trip.get("style_tags") or request.style_tags or _infer_tags(request.prompt)),
+            "status": trip.get("status") or "generated",
+            "route_summary": trip.get("route_summary") or _copy(
+                language,
+                "Agent-generated Paris itinerary draft.",
+                "Agent가 생성한 파리 일정 초안입니다.",
+            ),
+        },
+        "itinerary_days": list(trip.get("itinerary_days") or []),
+        "budget": _budget_from_days(total_days),
+    }
+
+
+def _generated_payload_from_agent_response(
+    response: dict[str, Any],
+    request: TripGenerateRequest,
+    language: str,
+) -> dict[str, Any]:
+    status = str(response.get("status") or "")
+    data = dict(response.get("data") or {})
+    if status == "ASK":
+        plan = dict(data.get("plan") or {})
+        payload = _generated_payload_from_plan(plan, request, language=language)
+        payload["trip"]["status"] = "needs_review"
+        payload["trip"]["route_summary"] = (
+            f"{payload['trip']['route_summary']} "
+            f"{_copy(language, 'Agent asked for more detail, so this draft uses sensible defaults.', 'Agent가 추가 정보를 요청해 기본값으로 초안을 만들었습니다.')}"
+        )
+        return payload
+    if status not in {"DONE", "PARTIAL"}:
+        raise HTTPException(status_code=502, detail="Agent failed to generate a trip")
+
+    plan = dict(data.get("plan") or {})
+    if not plan:
+        bundle_plan = _extract_plan_from_bundle(data.get("bundle"))
+        if bundle_plan:
+            plan = bundle_plan
+    return _generated_payload_from_plan(plan, request, language=language)
+
+
+def _extract_plan_from_bundle(bundle: Any) -> dict[str, Any] | None:
+    if not isinstance(bundle, dict):
+        return None
+    for result in bundle.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        data = result.get("data") or {}
+        plan = data.get("plan") if isinstance(data, dict) else None
+        if isinstance(plan, dict):
+            return plan
+    return None
+
+
+def _generated_payload_from_plan(
+    plan: dict[str, Any],
+    request: TripGenerateRequest,
+    language: str,
+) -> dict[str, Any]:
+    total_days = _resolve_total_days(request, plan)
+    start, end = _resolve_dates(request, plan, total_days)
+    themes = _plan_themes(plan)
+    must_include = _plan_must_include(plan)
+
+    itinerary_days = [
+        _build_agent_day(
+            day_number=day_number,
+            day_date=start + timedelta(days=day_number - 1),
+            total_days=total_days,
+            themes=themes,
+            must_include=must_include,
+            plan=plan,
+            language=language,
+        )
+        for day_number in range(1, total_days + 1)
+    ]
+
+    tags = list(dict.fromkeys([*request.style_tags, *themes, *_infer_tags(request.prompt), *_mobility_tags(plan)]))
+    return {
+        "trip": {
+            "trip_title": _title_from_prompt(request.prompt, total_days, language),
+            "prompt": request.prompt,
+            "start_date": start,
+            "end_date": end,
+            "total_days": total_days,
+            "style_tags": tags or _infer_tags(request.prompt),
+            "status": "generated",
+            "route_summary": _route_summary_from_plan(plan, language),
+        },
+        "itinerary_days": itinerary_days,
+        "budget": _budget_from_days(total_days, plan),
+    }
+
+
+def _build_agent_day(
+    *,
+    day_number: int,
+    day_date: date,
+    total_days: int,
+    themes: list[str],
+    must_include: list[str],
+    plan: dict[str, Any],
+    language: str,
+) -> dict[str, Any]:
+    morning_place = _select_place(day_number - 1, themes, must_include)
+    afternoon_place = _select_place(day_number, themes, must_include)
+    evening_place = _select_evening_place(day_number, themes)
+
+    evening_description = (
+        _copy(language, "End the trip with a memorable Paris view.", "기억에 남을 파리 전망으로 여행을 마무리합니다.")
+        if day_number == total_days
+        else _copy(language, "Close the day with a slower evening stop.", "느긋한 저녁 코스로 하루를 정리합니다.")
+    )
+
+    return {
+        "day_number": day_number,
+        "date": day_date,
+        "title": _copy(language, f"Day {day_number} Paris plan", f"파리 {day_number}일차 일정"),
+        "route_summary": _route_summary_from_plan(plan, language),
+        "items": [
+            _itinerary_item(
+                "morning",
+                "09:30",
+                morning_place,
+                _copy(language, "Start with a focused Paris highlight.", "파리의 핵심 명소로 하루를 시작합니다."),
+            ),
+            _itinerary_item(
+                "lunch",
+                "12:30",
+                "Le Marais cafe stop",
+                _copy(language, "Keep lunch close to the walking route.", "도보 동선 가까운 곳에서 점심을 잡습니다."),
+            ),
+            _itinerary_item(
+                "afternoon",
+                "15:00",
+                afternoon_place,
+                _copy(language, "Spend the afternoon around the selected theme.", "선택한 취향을 중심으로 오후 일정을 구성합니다."),
+            ),
+            _itinerary_item("evening", "19:30", evening_place, evening_description),
+        ],
+    }
+
+
+def _itinerary_item(slot: str, start_time: str, place_name: str, description: str) -> dict[str, Any]:
+    return {
+        "id": str(uuid4()),
+        "time_slot": slot,
+        "start_time": start_time,
+        "title": place_name,
+        "place": {
+            "name": place_name,
+            "category": _category_for_place(place_name),
+            "coordinates": DEFAULT_COORDINATES.get(place_name),
+        },
+        "description": description,
+        "estimated_duration": "1-2 hours",
+    }
+
+
+def _select_place(index: int, themes: list[str], must_include: list[str]) -> str:
+    if must_include:
+        return must_include[index % len(must_include)]
+    for theme in themes:
+        places = THEME_PLACE_POOL.get(theme)
+        if places:
+            return places[index % len(places)]
+    return DEFAULT_PLACE_ROTATION[index % len(DEFAULT_PLACE_ROTATION)]
+
+
+def _select_evening_place(index: int, themes: list[str]) -> str:
+    if "night_view" in themes:
+        return THEME_PLACE_POOL["night_view"][index % len(THEME_PLACE_POOL["night_view"])]
+    return ["Seine River", "Eiffel Tower", "Montmartre"][index % 3]
+
+
+def _category_for_place(place_name: str) -> str:
+    lowered = place_name.lower()
+    if "museum" in lowered or "orsay" in lowered or "louvre" in lowered:
+        return "museum"
+    if "cafe" in lowered:
+        return "cafe"
+    if "garden" in lowered or "park" in lowered:
+        return "park"
+    if "marche" in lowered or "lafayette" in lowered:
+        return "shopping"
+    return "landmark"
+
+
+def _plan_themes(plan: dict[str, Any]) -> list[str]:
+    preferences = plan.get("preferences") if isinstance(plan.get("preferences"), dict) else {}
+    themes = preferences.get("themes") if isinstance(preferences, dict) else []
+    if isinstance(themes, list):
+        return [str(theme) for theme in themes if theme]
+    return []
+
+
+def _plan_must_include(plan: dict[str, Any]) -> list[str]:
+    preferences = plan.get("preferences") if isinstance(plan.get("preferences"), dict) else {}
+    must_include = preferences.get("must_include") if isinstance(preferences, dict) else []
+    if isinstance(must_include, list):
+        return [str(place) for place in must_include if place]
+    return []
+
+
+def _mobility_tags(plan: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    for section_name, field_name in (("pace", "level"), ("mobility", "travel_mode")):
+        section = plan.get(section_name)
+        if isinstance(section, dict) and section.get(field_name):
+            tags.append(str(section[field_name]))
+    return tags
+
+
+def _route_summary_from_plan(plan: dict[str, Any], language: str) -> str:
+    mobility = plan.get("mobility") if isinstance(plan.get("mobility"), dict) else {}
+    pace = plan.get("pace") if isinstance(plan.get("pace"), dict) else {}
+    travel_mode = mobility.get("travel_mode") or "walk/transit"
+    pace_level = pace.get("level") or "balanced"
+    return _copy(
+        language,
+        f"Agent draft optimized for {travel_mode} movement with a {pace_level} pace.",
+        f"{travel_mode} 이동과 {pace_level} 속도에 맞춘 Agent 일정 초안입니다.",
+    )
+
+
+def _budget_from_days(total_days: int, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    plan_budget = plan.get("budget") if isinstance(plan, dict) and isinstance(plan.get("budget"), dict) else {}
+    budget_total = int(plan_budget.get("budget_total") or 0)
+    grand_total = budget_total or total_days * 180
+    return {
+        "attraction_total": max(0, grand_total // 5),
+        "hotel_total": max(0, (grand_total * 45) // 100),
+        "custom_expenses": [],
+        "currency": plan_budget.get("currency") or "EUR",
+    }
+
+
+def _resolve_total_days(request: TripGenerateRequest, plan: dict[str, Any]) -> int:
+    dates = plan.get("dates") if isinstance(plan.get("dates"), dict) else {}
+    return int(request.total_days or dates.get("days") or _infer_days(request.prompt) or 3)
+
+
+def _resolve_dates(request: TripGenerateRequest, plan: dict[str, Any], total_days: int) -> tuple[date, date]:
+    dates = plan.get("dates") if isinstance(plan.get("dates"), dict) else {}
+    start = request.start_date or _parse_iso_date(dates.get("start_date")) or (date.today() + timedelta(days=45))
+    end = request.end_date or _parse_iso_date(dates.get("end_date")) or (start + timedelta(days=total_days - 1))
+    return start, end
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _date_to_iso(value: date | str | None) -> str | None:
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def _mock_trip_payload(request: TripGenerateRequest, language: str) -> dict[str, Any]:
     total_days = request.total_days or _infer_days(request.prompt) or 3
     start = request.start_date or (date.today() + timedelta(days=45))
     end = request.end_date or (start + timedelta(days=total_days - 1))
     tags = request.style_tags or _infer_tags(request.prompt)
 
-    templates = [
-        (
-            "클래식 파리 첫 만남",
-            [
-                ("morning", "09:30", "루브르 박물관 핵심 작품 감상", "루브르 박물관", "museum", 48.8606, 2.3376, "모나리자와 고대 조각 중심으로 무리 없는 관람을 시작합니다.", "3시간"),
-                ("lunch", "12:40", "튈르리 근처 가벼운 점심", "튈르리 정원", "park", 48.8635, 2.327, "정원 주변 카페에서 여유롭게 쉬어갑니다.", "1시간"),
-                ("afternoon", "15:00", "오르세 미술관과 세느 산책", "오르세 미술관", "museum", 48.86, 2.3266, "인상주의 작품과 시계창 포토스팟을 함께 즐깁니다.", "2시간"),
-                ("evening", "20:00", "에펠탑 야경", "에펠탑", "landmark", 48.8584, 2.2945, "트로카데로에서 반짝이는 조명을 바라보며 하루를 마무리합니다.", "1시간 30분"),
-            ],
-        ),
-        (
-            "감성 골목과 성당 산책",
-            [
-                ("morning", "10:00", "노트르담 주변 시테섬 산책", "노트르담 대성당", "cathedral", 48.853, 2.3499, "성당 외관과 강변 서점을 천천히 둘러봅니다.", "2시간"),
-                ("lunch", "12:30", "마레 지구 브런치", "마레 지구", "neighborhood", 48.8575, 2.358, "편안한 골목 카페에서 브런치를 즐깁니다.", "1시간"),
-                ("afternoon", "15:00", "몽마르트르 예술가 언덕", "몽마르트르", "neighborhood", 48.8867, 2.3431, "사크레쾨르와 라 메종 로즈 골목을 연결해 걷습니다.", "3시간"),
-                ("evening", "19:30", "언덕 아래 비스트로 저녁", "아베스 광장", "neighborhood", 48.8844, 2.3386, "붐비는 중심가보다 조용한 비스트로를 추천합니다.", "1시간 30분"),
-            ],
-        ),
-        (
-            "여유로운 정원과 쇼핑",
-            [
-                ("morning", "10:00", "뤽상부르 공원 휴식", "뤽상부르 공원", "park", 48.8462, 2.3372, "초록 의자에 앉아 여행 템포를 낮춥니다.", "1시간 30분"),
-                ("lunch", "12:00", "생제르맹 점심", "생제르맹데프레", "neighborhood", 48.8539, 2.3331, "클래식한 카페 거리에서 점심을 잡습니다.", "1시간"),
-                ("afternoon", "14:30", "봉마르셰와 근처 산책", "봉마르셰", "shopping", 48.8512, 2.3256, "기념품과 식료품 쇼핑을 부담 없이 즐깁니다.", "2시간"),
-                ("evening", "18:30", "세느 강변 노을", "퐁데자르", "landmark", 48.8583, 2.3375, "해 질 무렵 강변을 따라 사진을 남깁니다.", "1시간"),
-            ],
-        ),
-    ]
-
-    itinerary_days = []
-    for index in range(total_days):
-        title, items = templates[index % len(templates)]
-        itinerary_days.append(
-            {
-                "day_number": index + 1,
-                "date": start + timedelta(days=index),
-                "title": title,
-                "route_summary": "도보와 짧은 지하철 이동을 섞은 무리 없는 파리 동선입니다.",
-                "items": [
-                    {
-                        "id": str(uuid4()),
-                        "time_slot": slot,
-                        "start_time": start_time,
-                        "title": item_title,
-                        "place": {
-                            "name": place_name,
-                            "category": category,
-                            "coordinates": {"lat": lat, "lng": lng},
-                        },
-                        "description": description,
-                        "estimated_duration": duration,
-                    }
-                    for slot, start_time, item_title, place_name, category, lat, lng, description, duration in items
-                ],
-            }
+    itinerary_days = [
+        _build_agent_day(
+            day_number=index + 1,
+            day_date=start + timedelta(days=index),
+            total_days=total_days,
+            themes=tags,
+            must_include=[],
+            plan={},
+            language=language,
         )
+        for index in range(total_days)
+    ]
 
     return {
         "trip": {
-            "trip_title": _title_from_prompt(request.prompt, total_days),
+            "trip_title": _title_from_prompt(request.prompt, total_days, language),
             "prompt": request.prompt,
             "start_date": start,
             "end_date": end,
             "total_days": total_days,
             "style_tags": tags,
             "status": "generated",
-            "route_summary": "대표 명소와 감성 산책을 균형 있게 섞은 파리 여행 초안입니다.",
+            "route_summary": _copy(
+                language,
+                "Paris itinerary draft generated from the local fallback planner.",
+                "로컬 fallback planner로 생성한 파리 일정 초안입니다.",
+            ),
         },
         "itinerary_days": itinerary_days,
-        "budget": {
-            "attraction_total": 22 * total_days,
-            "hotel_total": 180 * total_days,
-            "custom_expenses": [],
-            "currency": "EUR",
-        },
+        "budget": _budget_from_days(total_days),
     }
 
 
 def _infer_days(prompt: str) -> int | None:
+    lowered = prompt.lower()
     for days in range(1, 15):
-        if f"{days}박" in prompt:
+        if f"{days} nights" in lowered or f"{days}박" in prompt:
             return days + 1
-        if f"{days}일" in prompt:
+        if f"{days} days" in lowered or f"{days}-day" in lowered or f"{days}일" in prompt:
             return days
     return None
 
 
 def _infer_tags(prompt: str) -> list[str]:
-    tags = []
+    lowered = prompt.lower()
     keyword_map = {
+        "museum": "museum",
+        "louvre": "museum",
+        "cafe": "cafe",
+        "shopping": "shopping",
+        "night": "night_view",
+        "view": "night_view",
+        "park": "park",
+        "walking": "walk",
+        "미술": "museum",
         "박물관": "museum",
-        "조용": "calm",
-        "야경": "night-view",
-        "감성": "romantic",
-        "가족": "family",
+        "카페": "cafe",
         "쇼핑": "shopping",
+        "야경": "night_view",
+        "공원": "park",
     }
-    for keyword, tag in keyword_map.items():
-        if keyword in prompt:
-            tags.append(tag)
-    return tags or ["classic", "balanced"]
+    tags = [tag for keyword, tag in keyword_map.items() if keyword in lowered or keyword in prompt]
+    return list(dict.fromkeys(tags)) or ["classic", "balanced"]
 
 
-def _title_from_prompt(prompt: str, total_days: int) -> str:
-    if "박물관" in prompt:
-        return f"{total_days}일 파리 뮤지엄 여행"
-    if "야경" in prompt:
-        return f"{total_days}일 파리 야경 여행"
-    return f"{total_days}일 파리 감성 여행"
+def _title_from_prompt(prompt: str, total_days: int, language: str) -> str:
+    tags = _infer_tags(prompt)
+    if language == "en":
+        if "museum" in tags:
+            return f"{total_days}-Day Paris Museum Trip"
+        if "night_view" in tags:
+            return f"{total_days}-Day Paris Night-View Trip"
+        if "cafe" in tags:
+            return f"{total_days}-Day Paris Cafe Trip"
+        return f"{total_days}-Day Paris Trip"
+
+    if "museum" in tags:
+        return f"파리 {total_days}일 미술관 여행"
+    if "night_view" in tags:
+        return f"파리 {total_days}일 야경 여행"
+    if "cafe" in tags:
+        return f"파리 {total_days}일 카페 여행"
+    return f"파리 {total_days}일 여행"
+
+
+def _copy(language: str, en: str, ko: str) -> str:
+    return en if language == "en" else ko

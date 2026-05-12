@@ -1,4 +1,5 @@
 import type { ApiResponse, TokenPair } from "../types";
+import { getStoredLanguage } from "../i18n/config";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
 const ACCESS_TOKEN_KEY = "paris_access_token";
@@ -39,6 +40,9 @@ async function fetchWithAuth(path: string, options: ApiRequestOptions): Promise<
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type") && options.body) {
     headers.set("Content-Type", "application/json");
+  }
+  if (!headers.has("Accept-Language")) {
+    headers.set("Accept-Language", getStoredLanguage());
   }
 
   if (options.auth !== false) {

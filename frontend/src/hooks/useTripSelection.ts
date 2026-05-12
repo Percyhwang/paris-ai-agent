@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { tripService } from "../services/tripService";
+import { useLanguage } from "../store/LanguageContext";
 import type { Trip } from "../types";
 
 export function useTripSelection(initialTripId?: string) {
+  const { language } = useLanguage();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [selectedTripId, setSelectedTripId] = useState<string | undefined>(initialTripId);
   const [isLoading, setIsLoading] = useState(true);
@@ -16,7 +18,13 @@ export function useTripSelection(initialTripId?: string) {
       setTrips(data);
       setSelectedTripId((current) => current || initialTripId || data[0]?.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "여행 목록을 불러오지 못했습니다.");
+      if (err instanceof Error && err.message === "Database unavailable") {
+        setTrips([]);
+        setSelectedTripId(undefined);
+        setError(null);
+        return;
+      }
+      setError(err instanceof Error ? err.message : language === "en" ? "Could not load your trips." : "여행 목록을 불러오지 못했습니다.");
     } finally {
       setIsLoading(false);
     }

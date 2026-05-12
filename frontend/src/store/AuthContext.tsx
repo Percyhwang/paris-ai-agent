@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { authService } from "../services/authService";
 import { getStoredTokens } from "../services/apiClient";
-import type { User } from "../types";
+import { userService } from "../services/userService";
+import type { User, UserPreferences } from "../types";
 
 type AuthContextValue = {
   user: User | null;
@@ -9,6 +10,7 @@ type AuthContextValue = {
   isLoading: boolean;
   loginWithGoogle: (credential: string) => Promise<void>;
   demoLogin: () => Promise<void>;
+  updatePreferences: (preferences: Partial<UserPreferences>) => Promise<void>;
   logout: () => void;
 };
 
@@ -50,6 +52,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(response.user);
   }
 
+  async function updatePreferences(preferences: Partial<UserPreferences>) {
+    if (!user) return;
+    const updatedUser = await userService.updateMe({
+      preferences: {
+        ...user.preferences,
+        ...preferences,
+      },
+    });
+    setUser(updatedUser);
+  }
+
   function logout() {
     authService.logout();
     setUser(null);
@@ -63,6 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         loginWithGoogle,
         demoLogin,
+        updatePreferences,
         logout,
       }}
     >
