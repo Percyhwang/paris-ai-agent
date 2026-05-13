@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     google_client_id: str | None = None
     google_places_api_key: str | None = None
+    enable_google_food_search: bool = True
     google_routes_api_key: str | None = None
     jwt_private_key: str | None = None
     jwt_public_key: str | None = None

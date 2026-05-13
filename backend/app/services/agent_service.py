@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+from bson import ObjectId
 from fastapi import HTTPException
 
 from app.core.config import settings
-from app.schemas.trips import TripGenerateRequest
-from app.services.route_optimizer_service import optimize_trip_payload
+from app.db.serializers import serialize_doc, serialize_many
+from app.schemas.trips import TripAgentModifyRequest, TripGenerateRequest
+from app.services.google_places_service import search_google_food_places
+from app.services.place_repository_service import distance_meters, midpoint
+from app.services.route_optimizer_service import attach_route_legs_to_days, optimize_trip_payload
+from app.services.trip_service import ensure_trip_ownership, get_trip_detail
 
 DEFAULT_COORDINATES: dict[str, dict[str, float]] = {
     "Eiffel Tower": {"lat": 48.8584, "lng": 2.2945},
@@ -61,6 +66,63 @@ async def generate_trip_payload(
     return await _optimize_payload_if_possible(db, payload, request, language)
 
 
+async def modify_trip_with_agent(
+    db: Any,
+    user_id: str,
+    trip_id: str,
+    request: TripAgentModifyRequest,
+    language: str = "ko",
+) -> dict[str, Any]:
+    trip_doc = await ensure_trip_ownership(db, user_id, trip_id)
+    day_docs = await db.itinerary_day.find({"trip_id": trip_id}).sort("day_number", 1).to_list(length=60)
+    trip = serialize_doc(trip_doc)
+    current_days = serialize_many(day_docs)
+
+    agent_response = await _run_modify_agent(
+        request=request,
+        trip=trip,
+        current_days=current_days,
+        language=language,
+    )
+    modify_payload = _extract_modify_payload(agent_response)
+    modify_payload["trip_id"] = str(modify_payload.get("trip_id") or trip_id)
+    _fill_modify_operation_defaults(modify_payload, request.target_day, current_days)
+
+    missing_fields = _missing_modify_fields(modify_payload)
+    if missing_fields:
+        raise HTTPException(
+            status_code=422,
+            detail=_copy(
+                language,
+                f"Agent needs more detail: {', '.join(missing_fields)}.",
+                f"Agent가 추가 정보가 필요합니다: {', '.join(missing_fields)}.",
+            ),
+        )
+
+    derived_state = _apply_modify_payload(
+        trip=trip,
+        current_days=current_days,
+        modify_payload=modify_payload,
+    )
+    await _apply_google_food_replacements(derived_state, modify_payload, language=language)
+    itinerary_days = list(derived_state.get("itinerary_days") or [])
+    await attach_route_legs_to_days(
+        itinerary_days,
+        prompt=request.prompt,
+        style_tags=list(trip.get("style_tags") or []),
+        language=language,
+    )
+    derived_state["itinerary_days"] = itinerary_days
+    await _persist_agent_modified_itinerary(
+        db=db,
+        user_id=user_id,
+        trip_id=trip_id,
+        itinerary_days=itinerary_days,
+        route_summary=str(derived_state.get("route_summary") or trip.get("route_summary") or ""),
+    )
+    return await get_trip_detail(db, user_id, trip_id, language=language)
+
+
 async def _optimize_payload_if_possible(
     db: Any | None,
     payload: dict[str, Any],
@@ -103,6 +165,611 @@ def _run_local_agent(request: TripGenerateRequest, language: str) -> dict[str, A
         )
     )
     return response.model_dump()
+
+
+async def _run_modify_agent(
+    request: TripAgentModifyRequest,
+    trip: dict[str, Any],
+    current_days: list[dict[str, Any]],
+    language: str,
+) -> dict[str, Any]:
+    if settings.external_agent_api_url:
+        return await _run_external_modify_agent(request, trip, current_days, language)
+
+    local_response = _run_local_modify_agent(request, trip, current_days, language)
+    if local_response is not None:
+        return local_response
+
+    return _parse_modify_request_locally(request, trip, current_days, language)
+
+
+async def _run_external_modify_agent(
+    request: TripAgentModifyRequest,
+    trip: dict[str, Any],
+    current_days: list[dict[str, Any]],
+    language: str,
+) -> dict[str, Any]:
+    url = settings.external_agent_api_url
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            response = await client.post(
+                url,
+                json={
+                    "message": request.prompt,
+                    "context": _modify_agent_context(request, trip, current_days, language),
+                },
+                headers={"Accept-Language": language},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="External agent API failed") from exc
+
+    payload = response.json()
+    if isinstance(payload, dict) and isinstance(payload.get("success"), bool):
+        if not payload["success"]:
+            raise HTTPException(status_code=502, detail=str(payload.get("message") or "Agent API failed"))
+        payload = dict(payload.get("data") or {})
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Agent API returned an unsupported response shape")
+    return payload
+
+
+def _run_local_modify_agent(
+    request: TripAgentModifyRequest,
+    trip: dict[str, Any],
+    current_days: list[dict[str, Any]],
+    language: str,
+) -> dict[str, Any] | None:
+    _ensure_repo_root_on_path()
+    try:
+        from parser_api.intents import Intent
+        from parser_api.services.orchestration_service import default_orchestrator
+    except ModuleNotFoundError:
+        return None
+
+    response = default_orchestrator.run_for_intent(
+        intent=Intent.MODIFY_PLAN,
+        message=request.prompt,
+        context=_modify_agent_context(request, trip, current_days, language),
+    )
+    return response.model_dump()
+
+
+def _parse_modify_request_locally(
+    request: TripAgentModifyRequest,
+    trip: dict[str, Any],
+    current_days: list[dict[str, Any]],
+    language: str,
+) -> dict[str, Any]:
+    _ensure_repo_root_on_path()
+    try:
+        from parser_api.parsers.modify_plan.parser import parse_modify_plan
+    except ModuleNotFoundError as exc:
+        raise HTTPException(status_code=502, detail="Modify parser is unavailable") from exc
+
+    payload = parse_modify_plan(
+        request.prompt,
+        _modify_agent_context(request, trip, current_days, language),
+    )
+    return {
+        "status": "ASK" if payload.clarify.needed else "DONE",
+        "intent": payload.intent,
+        "trip_id": payload.trip_id or "",
+        "data": {"modify": payload.model_dump(exclude={"clarify"})},
+        "clarify": payload.clarify.model_dump(),
+    }
+
+
+def _modify_agent_context(
+    request: TripAgentModifyRequest,
+    trip: dict[str, Any],
+    current_days: list[dict[str, Any]],
+    language: str,
+) -> dict[str, Any]:
+    return {
+        "source": "trip_plan_page",
+        "language": language,
+        "trip_id": trip.get("id"),
+        "trip_title": trip.get("trip_title"),
+        "target_day": request.target_day,
+        "total_days": trip.get("total_days"),
+        "style_tags": list(trip.get("style_tags") or []),
+        "itinerary_days": _compact_itinerary_context(current_days),
+    }
+
+
+def _compact_itinerary_context(days: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact_days: list[dict[str, Any]] = []
+    for day in days:
+        compact_days.append(
+            {
+                "day_number": day.get("day_number"),
+                "title": day.get("title"),
+                "items": [
+                    {
+                        "time_slot": item.get("time_slot"),
+                        "title": item.get("title"),
+                        "place_name": (item.get("place") or {}).get("name"),
+                    }
+                    for item in day.get("items", [])
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+    return compact_days
+
+
+def _extract_modify_payload(agent_response: dict[str, Any]) -> dict[str, Any]:
+    status = str(agent_response.get("status") or "")
+    if status == "ERROR":
+        raise HTTPException(status_code=502, detail="Agent failed to modify the trip")
+
+    data = dict(agent_response.get("data") or {})
+    modify_payload = data.get("modify")
+    if not isinstance(modify_payload, dict):
+        bundle = data.get("bundle")
+        if isinstance(bundle, dict):
+            modify_payload = _extract_modify_from_bundle(bundle)
+
+    if not isinstance(modify_payload, dict):
+        raise HTTPException(status_code=502, detail="Agent did not return a modify payload")
+
+    return dict(modify_payload)
+
+
+def _extract_modify_from_bundle(bundle: dict[str, Any]) -> dict[str, Any] | None:
+    for result in bundle.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        data = result.get("data")
+        if isinstance(data, dict) and isinstance(data.get("modify"), dict):
+            return dict(data["modify"])
+    return None
+
+
+def _fill_modify_operation_defaults(
+    modify_payload: dict[str, Any],
+    default_day: int | None,
+    current_days: list[dict[str, Any]],
+) -> None:
+    modify_payload["trip_id"] = str(modify_payload.get("trip_id") or "")
+    operations = list(modify_payload.get("operations") or [])
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        operation["target_slot"] = _normalize_agent_slot(operation.get("target_slot"))
+        if isinstance(operation.get("swap_slots"), list):
+            operation["swap_slots"] = [_normalize_agent_slot(slot) for slot in operation["swap_slots"]]
+
+        if operation.get("target_day"):
+            continue
+
+        patch = operation.get("constraints_patch") if isinstance(operation.get("constraints_patch"), dict) else {}
+        place_hint = operation.get("place_name") or patch.get("from_place") or patch.get("to_place")
+        inferred_day = _find_day_containing_place(current_days, place_hint)
+        if inferred_day is not None:
+            operation["target_day"] = inferred_day
+        elif default_day is not None:
+            operation["target_day"] = default_day
+
+    clarify = modify_payload.get("clarify")
+    if isinstance(clarify, dict):
+        missing = _missing_modify_fields(modify_payload)
+        clarify["missing_fields"] = missing
+        clarify["needed"] = bool(missing)
+
+
+def _missing_modify_fields(modify_payload: dict[str, Any]) -> list[str]:
+    missing_fields: list[str] = []
+    if not modify_payload.get("trip_id"):
+        missing_fields.append("trip_id")
+
+    operations = [operation for operation in modify_payload.get("operations") or [] if isinstance(operation, dict)]
+    if not operations:
+        missing_fields.append("operations")
+
+    for operation in operations:
+        op = str(operation.get("op") or "")
+        place_hint = operation.get("place_name")
+        patch = operation.get("constraints_patch") if isinstance(operation.get("constraints_patch"), dict) else {}
+        from_place = patch.get("from_place")
+        if op in {"add", "swap", "move"} and not operation.get("target_day"):
+            missing_fields.append("operations.target_day")
+        if op in {"remove", "replace"} and not operation.get("target_day") and not (place_hint or from_place):
+            missing_fields.append("operations.target_day")
+
+    return list(dict.fromkeys(missing_fields))
+
+
+def _apply_modify_payload(
+    trip: dict[str, Any],
+    current_days: list[dict[str, Any]],
+    modify_payload: dict[str, Any],
+) -> dict[str, Any]:
+    _ensure_repo_root_on_path()
+    try:
+        from parser_api.services.place_catalog import apply_modifications, resolve_place
+    except ModuleNotFoundError as exc:
+        raise HTTPException(status_code=502, detail="Modify executor is unavailable") from exc
+
+    derived_state = apply_modifications(
+        plan_payload=_plan_payload_from_trip(trip),
+        modify_payload=modify_payload,
+        existing_itinerary_days=current_days,
+        existing_route_summary=trip.get("route_summary"),
+    )
+    _enforce_direct_replacements(derived_state, modify_payload, resolve_place)
+    return derived_state
+
+
+def _enforce_direct_replacements(
+    derived_state: dict[str, Any],
+    modify_payload: dict[str, Any],
+    resolve_place_fn: Any,
+) -> None:
+    itinerary_days = list(derived_state.get("itinerary_days") or [])
+    changed = False
+
+    for operation in modify_payload.get("operations") or []:
+        if not isinstance(operation, dict) or operation.get("op") != "replace":
+            continue
+
+        day_number = operation.get("target_day")
+        day = next((item for item in itinerary_days if item.get("day_number") == day_number), None)
+        if not isinstance(day, dict):
+            continue
+
+        patch = operation.get("constraints_patch") if isinstance(operation.get("constraints_patch"), dict) else {}
+        from_place = patch.get("from_place") or operation.get("place_name")
+        to_place = patch.get("to_place") or operation.get("place_name")
+        replacement = resolve_place_fn(to_place)
+        items = list(day.get("items") or [])
+        replace_index = _find_agent_item_index(items, from_place)
+        if replace_index is None or replacement is None:
+            continue
+
+        previous = items[replace_index]
+        slot = str(previous.get("time_slot") or operation.get("target_slot") or "afternoon")
+        items[replace_index] = _agent_item_from_resolved_place(
+            place=replacement,
+            day_number=int(day_number or 1),
+            slot=slot,
+            item_index=replace_index + 1,
+        )
+        day["items"] = items
+        day["route_summary"] = _agent_day_route_summary(items)
+        changed = True
+
+    if changed:
+        selected_places = _agent_selected_places(itinerary_days)
+        derived_state["selected_places"] = selected_places
+        if selected_places:
+            derived_state["route_summary"] = f"{', '.join(selected_places[:5])} 중심으로 Agent 수정 요청을 반영했습니다."
+
+
+async def _apply_google_food_replacements(
+    derived_state: dict[str, Any],
+    modify_payload: dict[str, Any],
+    *,
+    language: str,
+) -> None:
+    itinerary_days = list(derived_state.get("itinerary_days") or [])
+    changed = False
+
+    for operation in modify_payload.get("operations") or []:
+        if not isinstance(operation, dict) or operation.get("op") != "replace":
+            continue
+
+        patch = operation.get("constraints_patch") if isinstance(operation.get("constraints_patch"), dict) else {}
+        cuisine = str(patch.get("cuisine") or "").strip().lower()
+        if not cuisine:
+            continue
+
+        day_number = operation.get("target_day")
+        day = next((item for item in itinerary_days if item.get("day_number") == day_number), None)
+        if not isinstance(day, dict):
+            continue
+
+        items = list(day.get("items") or [])
+        replace_index = _find_agent_item_index(items, patch.get("from_place") or operation.get("place_name"))
+        if replace_index is None:
+            replace_index = _find_agent_slot_item_index(items, _normalize_agent_slot(operation.get("target_slot")))
+        if replace_index is None:
+            continue
+
+        anchor = _agent_food_search_anchor(items, replace_index)
+        google_candidates = await search_google_food_places(cuisine=cuisine, center=anchor, language=language)
+        selected = _choose_google_food_candidate(google_candidates, items=items, replace_index=replace_index)
+        if not selected:
+            continue
+
+        previous = items[replace_index]
+        slot = str(previous.get("time_slot") or operation.get("target_slot") or "lunch")
+        items[replace_index] = _agent_item_from_google_place(
+            place=selected,
+            previous_item=previous,
+            day_number=int(day_number or 1),
+            slot=slot,
+            item_index=replace_index + 1,
+        )
+        day["items"] = items
+        day["route_summary"] = _agent_day_route_summary(items)
+        changed = True
+
+    if changed:
+        selected_places = _agent_selected_places(itinerary_days)
+        derived_state["selected_places"] = selected_places
+        if selected_places:
+            derived_state["route_summary"] = f"{', '.join(selected_places[:5])} 중심으로 Agent 수정 요청을 반영했습니다."
+
+
+def _find_agent_slot_item_index(items: list[dict[str, Any]], target_slot: Any) -> int | None:
+    if not target_slot:
+        return None
+    normalized_slot = _normalize_agent_slot(target_slot)
+    return next((index for index, item in enumerate(items) if item.get("time_slot") == normalized_slot), None)
+
+
+def _agent_food_search_anchor(items: list[dict[str, Any]], replace_index: int) -> dict[str, float]:
+    previous_coordinates = _agent_item_coordinates(items[replace_index - 1]) if replace_index > 0 else None
+    next_coordinates = _agent_item_coordinates(items[replace_index + 1]) if replace_index + 1 < len(items) else None
+    if previous_coordinates and next_coordinates:
+        return midpoint(previous_coordinates, next_coordinates)
+    return previous_coordinates or next_coordinates or {"lat": 48.8566, "lng": 2.3522}
+
+
+def _choose_google_food_candidate(
+    candidates: list[dict[str, Any]],
+    *,
+    items: list[dict[str, Any]],
+    replace_index: int,
+) -> dict[str, Any] | None:
+    used_names = {
+        _simple_normalize(str((item.get("place") or {}).get("name") or item.get("title") or ""))
+        for index, item in enumerate(items)
+        if index != replace_index
+    }
+    available = [
+        candidate
+        for candidate in candidates
+        if _simple_normalize(str(candidate.get("name") or "")) not in used_names
+        and candidate.get("coordinates")
+    ]
+    if not available:
+        return None
+
+    return min(
+        available,
+        key=lambda candidate: (
+            round(_candidate_agent_route_distance(candidate, items=items, replace_index=replace_index) / 100),
+            -float(candidate.get("rating") or 0),
+            -int(candidate.get("review_count") or 0),
+            -float(candidate.get("popularity") or 0),
+            str(candidate.get("name") or ""),
+        ),
+    )
+
+
+def _candidate_agent_route_distance(
+    candidate: dict[str, Any],
+    *,
+    items: list[dict[str, Any]],
+    replace_index: int,
+) -> int:
+    coordinates = candidate.get("coordinates")
+    if not isinstance(coordinates, dict):
+        return 0
+    anchors: list[dict[str, float]] = []
+    previous_coordinates = _agent_item_coordinates(items[replace_index - 1]) if replace_index > 0 else None
+    next_coordinates = _agent_item_coordinates(items[replace_index + 1]) if replace_index + 1 < len(items) else None
+    if previous_coordinates:
+        anchors.append(previous_coordinates)
+    if next_coordinates:
+        anchors.append(next_coordinates)
+    return sum(distance_meters(coordinates, anchor) for anchor in anchors)
+
+
+def _agent_item_coordinates(item: dict[str, Any]) -> dict[str, float] | None:
+    coordinates = (item.get("place") or {}).get("coordinates")
+    if not isinstance(coordinates, dict):
+        return None
+    lat = coordinates.get("lat")
+    lng = coordinates.get("lng")
+    if lat is None or lng is None:
+        return None
+    return {"lat": float(lat), "lng": float(lng)}
+
+
+def _agent_item_from_google_place(
+    *,
+    place: dict[str, Any],
+    previous_item: dict[str, Any],
+    day_number: int,
+    slot: str,
+    item_index: int,
+) -> dict[str, Any]:
+    return {
+        "id": f"{day_number}-{place['slug']}-{item_index}",
+        "time_slot": slot,
+        "start_time": str(previous_item.get("start_time") or _agent_slot_start_time(slot)),
+        "title": place["name"],
+        "place": {
+            "place_id": place.get("google_place_id") or place.get("id") or place["slug"],
+            "name": place["name"],
+            "coordinates": dict(place["coordinates"]),
+            "category": place.get("category") or "restaurant",
+            "cuisine": place.get("cuisine"),
+            "rating": place.get("rating"),
+            "review_count": place.get("review_count"),
+            "google_place_id": place.get("google_place_id"),
+            "google_maps_uri": place.get("google_maps_uri"),
+        },
+        "description": place.get("short_description") or previous_item.get("description") or "",
+        "estimated_duration": place.get("estimated_visit_duration") or previous_item.get("estimated_duration") or "1 hour",
+        "area": previous_item.get("area"),
+    }
+
+
+def _find_agent_item_index(items: list[dict[str, Any]], place_hint: Any) -> int | None:
+    if not place_hint:
+        return None
+    normalized_hint = _simple_normalize(str(place_hint))
+    for index, item in enumerate(items):
+        item_name = str((item.get("place") or {}).get("name") or item.get("title") or "")
+        normalized_item = _simple_normalize(item_name)
+        if normalized_hint and (
+            normalized_hint == normalized_item
+            or normalized_hint in normalized_item
+            or normalized_item in normalized_hint
+        ):
+            return index
+    return None
+
+
+def _agent_item_from_resolved_place(
+    *,
+    place: dict[str, Any],
+    day_number: int,
+    slot: str,
+    item_index: int,
+) -> dict[str, Any]:
+    return {
+        "id": f"{day_number}-{place['slug']}-{item_index}",
+        "time_slot": slot,
+        "start_time": _agent_slot_start_time(slot),
+        "title": place["name"],
+        "place": {
+            "place_id": place["slug"],
+            "name": place["name"],
+            "coordinates": dict(place["coordinates"]),
+            "category": place["category"],
+            "admission_fee": place.get("admission_fee"),
+            "admission_fee_amount": place.get("admission_fee_amount"),
+        },
+        "description": place["short_description"],
+        "estimated_duration": place["estimated_visit_duration"],
+    }
+
+
+def _agent_slot_start_time(slot: str) -> str:
+    return {
+        "morning": "09:00",
+        "lunch": "12:30",
+        "afternoon": "15:00",
+        "evening": "19:00",
+    }.get(slot, "15:00")
+
+
+def _agent_day_route_summary(items: list[dict[str, Any]]) -> str:
+    names = [str(item.get("title") or "") for item in items if item.get("title")]
+    return f"{', '.join(names[:4])} 중심으로 Agent 수정 요청을 반영했습니다." if names else "Agent 수정 요청을 반영했습니다."
+
+
+def _agent_selected_places(itinerary_days: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for day in itinerary_days:
+        for item in day.get("items") or []:
+            name = str((item.get("place") or {}).get("name") or item.get("title") or "").strip()
+            if name:
+                names.append(name)
+    return list(dict.fromkeys(names))
+
+
+def _plan_payload_from_trip(trip: dict[str, Any]) -> dict[str, Any]:
+    tags = [str(tag) for tag in trip.get("style_tags") or []]
+    pace = "slow" if "slow" in tags or "여유" in tags else "fast" if "fast" in tags else "normal"
+    return {
+        "dates": {
+            "start_date": _date_to_iso(trip.get("start_date")),
+            "end_date": _date_to_iso(trip.get("end_date")),
+            "days": trip.get("total_days"),
+        },
+        "preferences": {
+            "themes": tags,
+            "must_include": [],
+            "must_avoid": [],
+        },
+        "pace": {"level": pace},
+        "mobility": {"travel_mode": "both", "optimize": "min_time"},
+    }
+
+
+async def _persist_agent_modified_itinerary(
+    *,
+    db: Any,
+    user_id: str,
+    trip_id: str,
+    itinerary_days: list[dict[str, Any]],
+    route_summary: str,
+) -> None:
+    now = datetime.now(UTC)
+    await db.itinerary_day.delete_many({"trip_id": trip_id})
+    day_docs = []
+    for day in itinerary_days:
+        day_doc = dict(day)
+        day_doc.pop("id", None)
+        day_doc["trip_id"] = trip_id
+        day_doc["user_id"] = user_id
+        day_doc["date"] = _agent_date_to_datetime(day_doc.get("date"))
+        day_doc["created_at"] = now
+        day_doc["updated_at"] = now
+        day_docs.append(day_doc)
+    if day_docs:
+        await db.itinerary_day.insert_many(day_docs)
+
+    await db.trip_plans.update_one(
+        {"_id": ObjectId(trip_id)},
+        {
+            "$set": {
+                "route_summary": route_summary,
+                "status": "modified",
+                "updated_at": now,
+            }
+        },
+    )
+
+
+def _agent_date_to_datetime(value: date | datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=UTC)
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _normalize_agent_slot(value: Any) -> Any:
+    slot = str(value) if value is not None else value
+    return {"dinner": "evening", "night": "evening"}.get(slot, slot)
+
+
+def _find_day_containing_place(days: list[dict[str, Any]], place_hint: Any) -> int | None:
+    if not place_hint:
+        return None
+    normalized_hint = _simple_normalize(str(place_hint))
+    if not normalized_hint:
+        return None
+
+    for day in days:
+        for item in day.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_name = str((item.get("place") or {}).get("name") or item.get("title") or "")
+            normalized_item_name = _simple_normalize(item_name)
+            if normalized_hint in normalized_item_name or normalized_item_name in normalized_hint:
+                try:
+                    return int(day.get("day_number") or 0)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def _simple_normalize(value: str) -> str:
+    return "".join(char.lower() for char in value if char.isalnum())
 
 
 def _ensure_repo_root_on_path() -> None:
@@ -251,18 +918,15 @@ def _generated_payload_from_plan(
     themes = _plan_themes(plan)
     must_include = _plan_must_include(plan)
 
-    itinerary_days = [
-        _build_agent_day(
-            day_number=day_number,
-            day_date=start + timedelta(days=day_number - 1),
-            total_days=total_days,
-            themes=themes,
-            must_include=must_include,
-            plan=plan,
-            language=language,
-        )
-        for day_number in range(1, total_days + 1)
-    ]
+    itinerary_days = _build_agent_itinerary_days(
+        plan=plan,
+        start=start,
+        total_days=total_days,
+        themes=themes,
+        must_include=must_include,
+        pace_level=_resolve_agent_pace_level(plan, request, themes),
+        language=language,
+    )
 
     tags = list(dict.fromkeys([*request.style_tags, *themes, *_infer_tags(request.prompt), *_mobility_tags(plan)]))
     return {
@@ -328,6 +992,93 @@ def _build_agent_day(
             _itinerary_item("evening", "19:30", evening_place, evening_description),
         ],
     }
+
+
+def _build_agent_itinerary_days(
+    *,
+    plan: dict[str, Any],
+    start: date,
+    total_days: int,
+    themes: list[str],
+    must_include: list[str],
+    pace_level: str,
+    language: str,
+) -> list[dict[str, Any]]:
+    _ensure_repo_root_on_path()
+    try:
+        from parser_api.services.place_catalog import build_itinerary
+    except ModuleNotFoundError:
+        return [
+            _build_agent_day(
+                day_number=day_number,
+                day_date=start + timedelta(days=day_number - 1),
+                total_days=total_days,
+                themes=themes,
+                must_include=must_include,
+                plan=plan,
+                language=language,
+            )
+            for day_number in range(1, total_days + 1)
+        ]
+
+    payload = {
+        "dates": {
+            "start_date": start.isoformat(),
+            "days": total_days,
+        },
+        "preferences": {
+            "themes": themes,
+            "must_include": must_include,
+            "must_avoid": list(((plan.get("preferences") or {}).get("must_avoid") or [])),
+        },
+        "pace": {"level": pace_level},
+        "mobility": plan.get("mobility") or {"travel_mode": "both", "optimize": "min_time"},
+    }
+    return list(build_itinerary(payload).get("itinerary_days") or [])
+
+
+def _resolve_agent_pace_level(plan: dict[str, Any], request: TripGenerateRequest, themes: list[str]) -> str:
+    pace = plan.get("pace") if isinstance(plan.get("pace"), dict) else {}
+    plan_level = str(pace.get("level") or "").lower()
+    signals = " ".join(
+        [
+            request.prompt.lower(),
+            *[str(tag).lower() for tag in request.style_tags],
+            *[str(theme).lower() for theme in themes],
+            *[str(tag).lower() for tag in _infer_tags(request.prompt)],
+        ]
+    )
+    slow_tokens = (
+        "slow",
+        "relax",
+        "relaxed",
+        "healing",
+        "\ud790\ub9c1",
+        "\uc5ec\uc720",
+        "\ud734\uc2dd",
+        "\ub290\uae0b",
+        "\ucc9c\ucc9c\ud788",
+        "\uc26c\uc5c4",
+    )
+    fast_tokens = (
+        "fast",
+        "packed",
+        "dense",
+        "busy",
+        "\uc54c\ucc28",
+        "\ub9ce\uc774",
+        "\ud0c0\uc774\ud2b8",
+        "\ube61\ube61",
+    )
+    if any(token in signals for token in slow_tokens):
+        return "slow"
+    if plan_level in {"slow", "fast"}:
+        return plan_level
+    if any(token in signals for token in fast_tokens):
+        return "fast"
+    if plan_level == "normal":
+        return "normal"
+    return "normal"
 
 
 def _itinerary_item(slot: str, start_time: str, place_name: str, description: str) -> dict[str, Any]:

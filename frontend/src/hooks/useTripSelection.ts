@@ -10,13 +10,24 @@ export function useTripSelection(initialTripId?: string) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadTrips() {
+  async function loadTrips(nextSelectedId?: string | null) {
     setIsLoading(true);
     setError(null);
     try {
       const data = await tripService.listTrips();
       setTrips(data);
-      setSelectedTripId((current) => current || initialTripId || data[0]?.id);
+      setSelectedTripId((current) => {
+        if (nextSelectedId !== undefined) {
+          return nextSelectedId ?? undefined;
+        }
+        if (current && data.some((trip) => trip.id === current)) {
+          return current;
+        }
+        if (initialTripId && data.some((trip) => trip.id === initialTripId)) {
+          return initialTripId;
+        }
+        return data[0]?.id;
+      });
     } catch (err) {
       if (err instanceof Error && err.message === "Database unavailable") {
         setTrips([]);

@@ -52,12 +52,23 @@ export function Timeline({ day }: { day: ItineraryDay }) {
             </div>
             <div className="timeline-dot" />
             <div className="timeline-body">
-              <h3>{item.title}</h3>
+              <h3>
+                <a
+                  className="place-search-link"
+                  href={`https://www.google.com/search?q=${encodeURIComponent(`${item.place.name} Paris`)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {item.title}
+                </a>
+              </h3>
               <p>{item.description}</p>
               <div className="info-strip small-strip">
                 <span>{item.place.name}</span>
                 <span>{item.estimated_duration}</span>
                 {item.place.category ? <span>{getPlaceCategoryLabel(item.place.category, language)}</span> : null}
+                {item.place.admission_fee ? <span>{item.place.admission_fee}</span> : null}
+                {item.place.rating ? <span>{item.place.rating.toFixed(1)} / 5</span> : null}
               </div>
             </div>
           </article>

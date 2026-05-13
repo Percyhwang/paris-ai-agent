@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from parser_api.mcp_servers.discovery_server import mcp as discovery_server
+from parser_api.mcp_servers.google_maps_route_server import mcp as google_maps_route_server
 from parser_api.mcp_servers.place_catalog_server import mcp as place_catalog_server
 from parser_api.mcp_servers.planning_server import mcp as planning_server
 from parser_api.mcp_servers.profile_server import mcp as profile_server
@@ -24,6 +25,7 @@ def build_default_mcp_service_registry() -> McpServiceRegistry:
             "discovery": discovery_server,
             "profile": profile_server,
             "catalog": place_catalog_server,
+            "google_maps_route": google_maps_route_server,
         }
     )
 

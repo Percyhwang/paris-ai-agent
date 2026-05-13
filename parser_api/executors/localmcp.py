@@ -6,6 +6,7 @@ from parser_api.executors.base import ExecutionRequest, ExecutionResult
 from parser_api.intents import Intent
 from parser_api.mcp_servers import (
     discovery_server as discovery_module,
+    google_maps_route_server as google_maps_route_module,
     place_catalog_server as place_catalog_module,
     planning_server as planning_module,
     profile_server as profile_module,
@@ -16,6 +17,7 @@ SERVICE_MODULES: dict[str, Any] = {
     "discovery": discovery_module,
     "profile": profile_module,
     "catalog": place_catalog_module,
+    "google_maps_route": google_maps_route_module,
 }
 
 

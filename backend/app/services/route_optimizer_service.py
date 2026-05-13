@@ -15,7 +15,7 @@ from app.services.place_repository_service import (
     resolve_place,
 )
 
-TIME_SLOTS = ["09:30", "12:30", "15:00", "18:30", "20:30"]
+TIME_SLOTS = ["08:30", "10:00", "11:30", "12:45", "14:15", "15:45", "17:30", "19:00", "20:30"]
 
 
 async def optimize_trip_payload(
@@ -41,11 +41,31 @@ def infer_route_mode(prompt: str, style_tags: list[Any]) -> RouteMode:
     haystack = " ".join([prompt, *[str(tag) for tag in style_tags]]).lower()
     walk_keywords = ["walk", "walking", "on foot", "도보", "걸어서", "걷", "산책"]
     transit_keywords = ["transit", "metro", "subway", "bus", "rer", "train", "대중교통", "지하철", "버스"]
+    walk_keywords.extend(["\ub3c4\ubcf4", "\uac77\uae30", "\uac78\uc5b4"])
+    transit_keywords.extend(["\ub300\uc911\uad50\ud1b5", "\uc9c0\ud558\ucca0", "\ubc84\uc2a4"])
     if any(keyword in haystack for keyword in walk_keywords):
         return "walk"
     if any(keyword in haystack for keyword in transit_keywords):
         return "transit"
     return "mixed"
+
+
+async def attach_route_legs_to_days(
+    days: list[dict[str, Any]],
+    *,
+    prompt: str,
+    style_tags: list[Any],
+    language: str,
+) -> RouteMode:
+    route_mode = infer_route_mode(prompt, style_tags)
+    for day in days:
+        items = [dict(item) for item in day.get("items") or []]
+        if not items:
+            continue
+        await _attach_route_legs(items, route_mode, language)
+        day["items"] = items
+        day["route_summary"] = _day_route_summary(items, route_mode, language)
+    return route_mode
 
 
 async def _optimize_day(
@@ -63,6 +83,7 @@ async def _optimize_day(
         if resolved:
             resolved_non_meals.append(resolved)
 
+    resolved_non_meals = _dedupe_items_by_place(resolved_non_meals)
     if not resolved_non_meals:
         return
 
@@ -108,6 +129,37 @@ def _nearest_neighbor_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]
         ordered.append(current)
         remaining.remove(current)
     return ordered
+
+
+def _dedupe_items_by_place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique_items: list[dict[str, Any]] = []
+    for item in items:
+        keys = _item_place_keys(item)
+        if any(key in seen for key in keys):
+            continue
+        seen.update(keys)
+        unique_items.append(item)
+    return unique_items
+
+
+def _item_place_keys(item: dict[str, Any]) -> set[str]:
+    place = item.get("place") or {}
+    keys: set[str] = set()
+    place_id = str(place.get("place_id") or "").strip().lower()
+    if place_id:
+        keys.add(f"id:{place_id}")
+    name = str(place.get("name") or item.get("title") or "").strip().lower()
+    if name:
+        keys.add(f"name:{name}")
+    coordinates = place.get("coordinates") or {}
+    try:
+        coordinate_key = f"{float(coordinates.get('lat')):.4f},{float(coordinates.get('lng')):.4f}"
+    except (TypeError, ValueError):
+        coordinate_key = ""
+    if coordinate_key:
+        keys.add(f"coord:{coordinate_key}")
+    return keys
 
 
 async def _with_meal_stops(

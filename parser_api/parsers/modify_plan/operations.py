@@ -7,6 +7,7 @@ from parser_api.parsers.common.extractors import extract_slots_in_order
 from parser_api.parsers.modify_plan.inference import (
     _extract_target_day,
     _infer_category,
+    _infer_cuisine,
     _infer_op,
     _infer_place_name,
     _infer_quantity,
@@ -27,12 +28,18 @@ def _build_operation(message: str) -> Operation:
     op = _infer_op(text)
     day = _extract_target_day(text)
     category = _infer_category(text)
+    cuisine = _infer_cuisine(text)
+    if cuisine and category is None:
+        category = "restaurant"
     quantity = _infer_quantity(text)
     from_quantity, to_quantity = _infer_quantity_change(text)
     target_slot = _infer_target_slot(text)
     ordered_slots = extract_slots_in_order(text)
     swap_slots: Optional[list[str]] = None
     place_name = _infer_place_name(message, op)
+    wants_alternative = any(token in text for token in ("\ub2e4\ub978", "other", "another"))
+    if op == "move" and (wants_alternative or cuisine) and target_slot:
+        op = "replace"
 
     constraints_patch = None
     if op in {"set_quantity", "replace"}:
@@ -58,6 +65,9 @@ def _build_operation(message: str) -> Operation:
         if replace_patch:
             constraints_patch = {**(constraints_patch or {}), **replace_patch}
 
+    if cuisine:
+        constraints_patch = {**(constraints_patch or {}), "cuisine": cuisine}
+
     if op == "swap":
         slots = list(ordered_slots)
         if len(slots) >= 2:
@@ -65,7 +75,7 @@ def _build_operation(message: str) -> Operation:
         target_slot = None
 
     mobility = _extract_mobility_patch(text)
-    if mobility is not None and op not in {"swap", "move", "set_quantity", "set_constraint"}:
+    if mobility is not None and op not in {"add", "remove", "replace", "swap", "move", "set_quantity", "set_constraint"}:
         op = "set_mobility"
 
     if op == "move" and len(ordered_slots) >= 2:

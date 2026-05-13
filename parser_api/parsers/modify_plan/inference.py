@@ -11,6 +11,33 @@ from parser_api.parsers.common.constants import KOREAN_KNUM_MAP
 from parser_api.parsers.common.extractors import extract_slots_in_order
 from parser_api.parsers.modify_plan.constants import KNOWN_PLACES
 
+CUISINE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pasta", ("\ud30c\uc2a4\ud0c0", "pasta")),
+    ("pizza", ("\ud53c\uc790", "pizza")),
+    ("italian", ("\uc774\ud0c8\ub9ac\uc548", "\uc774\ud0dc\ub9ac", "italian")),
+    ("french", ("\ud504\ub791\uc2a4\uc2dd", "\ud504\ub80c\uce58", "french", "bistro", "brasserie")),
+    ("korean", ("\ud55c\uc2dd", "\ud55c\uad6d\uc2dd", "korean")),
+    ("sushi", ("\uc2a4\uc2dc", "\ucd08\ubc25", "sushi")),
+    ("ramen", ("\ub77c\uba58", "\ub77c\uba74", "ramen")),
+    ("japanese", ("\uc77c\uc2dd", "\uc77c\ubcf8\uc2dd", "japanese")),
+    ("chinese", ("\uc911\uc2dd", "\uc911\uad6d\uc2dd", "chinese")),
+    ("thai", ("\ud0dc\uad6d\uc2dd", "\ud0c0\uc774", "thai")),
+    ("indian", ("\uc778\ub3c4\uc2dd", "\ucee4\ub9ac", "indian", "curry")),
+    ("vietnamese", ("\ubca0\ud2b8\ub0a8\uc2dd", "\ubc18\ubbf8", "\ud3ec", "vietnamese")),
+    ("mexican", ("\uba55\uc2dc\uce78", "\ud0c0\ucf54", "mexican", "taco")),
+    ("mediterranean", ("\uc9c0\uc911\ud574", "mediterranean")),
+    ("lebanese", ("\ub808\ubc14\ub17c", "lebanese")),
+    ("moroccan", ("\ubaa8\ub85c\ucf54", "moroccan")),
+    ("burger", ("\ubc84\uac70", "burger")),
+    ("steak", ("\uc2a4\ud14c\uc774\ud06c", "steak", "steakhouse")),
+    ("seafood", ("\ud574\uc0b0\ubb3c", "\uc2dc\ud478\ub4dc", "seafood", "fish")),
+    ("vegetarian", ("\ucc44\uc2dd", "\ube44\uac74", "vegetarian", "vegan")),
+    ("brunch", ("\ube0c\ub7f0\uce58", "brunch")),
+    ("bakery", ("\ube75\uc9d1", "\ubca0\uc774\ucee4\ub9ac", "\ud06c\ub8e8\uc544\uc0c1", "bakery", "croissant")),
+    ("coffee", ("\ucee4\ud53c", "coffee")),
+    ("dessert", ("\ub514\uc800\ud2b8", "\ucf00\uc774\ud06c", "dessert", "cake")),
+)
+
 
 def _extract_target_day(text: str) -> Optional[int]:
     match = re.search(r"day\s*(\d+)", text, re.IGNORECASE)
@@ -115,6 +142,13 @@ def _infer_category(text: str) -> Optional[str]:
         return "restaurant"
     return None
 
+def _infer_cuisine(text: str) -> Optional[str]:
+    lowered = text.lower()
+    for cuisine, keywords in CUISINE_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
+            return cuisine
+    return None
+
 
 def _find_place_mentions(message: str) -> list[str]:
     found: list[str] = []
@@ -216,4 +250,15 @@ def _infer_quantity_change(text: str) -> tuple[Optional[int], Optional[int]]:
 
 def _infer_target_slot(text: str) -> Optional[str]:
     slots = extract_slots_in_order(text)
-    return slots[0] if slots else None
+    if slots:
+        return slots[0]
+    lowered = text.lower()
+    if any(token in lowered for token in ("\uc544\uce68", "\uc624\uc804", "morning", "breakfast")):
+        return "morning"
+    if any(token in lowered for token in ("\uc810\uc2ec", "\ube0c\ub7f0\uce58", "lunch", "brunch")):
+        return "lunch"
+    if any(token in lowered for token in ("\uc624\ud6c4", "afternoon")):
+        return "afternoon"
+    if any(token in lowered for token in ("\uc800\ub141", "\ubc24", "dinner", "evening", "night")):
+        return "dinner"
+    return None

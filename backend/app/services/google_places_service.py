@@ -172,6 +172,10 @@ def google_places_enabled() -> bool:
     return bool(settings.google_places_api_key)
 
 
+def google_food_search_enabled() -> bool:
+    return google_places_enabled() and settings.enable_google_food_search
+
+
 async def search_paris_places(
     search: str | None,
     category: str | None,
@@ -258,6 +262,51 @@ async def fetch_place_by_id(place_id: str, api_base_url: str, language: str = "k
     if not normalized:
         raise HTTPException(status_code=404, detail="Place not found")
     return normalized
+
+
+async def search_google_food_places(
+    *,
+    cuisine: str,
+    center: dict[str, float],
+    language: str = "ko",
+    radius_meters: float = 2500.0,
+    page_size: int = 12,
+) -> list[dict[str, Any]]:
+    if not google_food_search_enabled():
+        return []
+
+    body = {
+        "textQuery": _google_food_text_query(cuisine),
+        "pageSize": page_size,
+        "languageCode": _google_places_language_code(language),
+        "regionCode": "FR",
+        "includedType": _google_food_included_type(cuisine),
+        "strictTypeFiltering": True,
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": center["lat"], "longitude": center["lng"]},
+                "radius": radius_meters,
+            }
+        },
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": settings.google_places_api_key or "",
+        "X-Goog-FieldMask": SEARCH_FIELD_MASK,
+    }
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        try:
+            response = await client.post(GOOGLE_PLACES_TEXT_SEARCH_URL, json=body, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return []
+
+    return [
+        normalized
+        for place in response.json().get("places", [])
+        if (normalized := _normalize_google_food_candidate(place, cuisine=cuisine, language=language)) is not None
+    ]
 
 
 async def fetch_place_photo_bytes(
@@ -437,11 +486,113 @@ def _normalize_google_place(
         "location": short_address,
         "tags": _build_tags(category=category, place=place),
         "popularity": _build_popularity_score(rating=rating, review_count=review_count),
+        "rating": rating or None,
+        "review_count": review_count,
         "google_place_id": place_id,
         "google_resource_name": place.get("name"),
         "google_maps_uri": place.get("googleMapsUri"),
         "source": "google_places_new",
     }
+
+
+def _normalize_google_food_candidate(
+    place: dict[str, Any],
+    *,
+    cuisine: str,
+    language: str,
+) -> dict[str, Any] | None:
+    place_id = place.get("id")
+    display_name = _extract_text(place.get("displayName"))
+    coordinates = place.get("location") or {}
+    lat = coordinates.get("latitude")
+    lng = coordinates.get("longitude")
+    if not place_id or not display_name or lat is None or lng is None:
+        return None
+
+    rating = float(place.get("rating", 0) or 0)
+    review_count = int(place.get("userRatingCount", 0) or 0)
+    short_address = place.get("shortFormattedAddress") or place.get("formattedAddress") or "Paris, France"
+    rating_summary = _food_rating_summary(rating=rating, review_count=review_count, language=language)
+    return {
+        "id": place_id,
+        "slug": _slugify(f"{display_name}-{place_id[:6]}"),
+        "name": display_name,
+        "category": _google_food_category(cuisine),
+        "coordinates": {"lat": float(lat), "lng": float(lng)},
+        "image_url": DEFAULT_PLACE_IMAGE,
+        "short_description": rating_summary,
+        "full_description": f"{display_name} near {short_address}. {rating_summary}",
+        "history": "",
+        "photo_spot_tips": [display_name, short_address, "Check Google Maps before visiting."],
+        "estimated_visit_duration": "1 hour",
+        "admission_fee": None,
+        "location": short_address,
+        "tags": list(dict.fromkeys(["restaurant", "foodie", cuisine, *(place.get("types") or [])[:3], "paris"])),
+        "cuisine": [cuisine],
+        "popularity": _build_popularity_score(rating=rating, review_count=review_count),
+        "rating": rating or None,
+        "review_count": review_count,
+        "google_place_id": place_id,
+        "google_resource_name": place.get("name"),
+        "google_maps_uri": place.get("googleMapsUri"),
+        "source": "google_places_new",
+    }
+
+
+def _google_food_text_query(cuisine: str) -> str:
+    cuisine_queries = {
+        "pasta": "pasta restaurant in Paris, France",
+        "pizza": "pizza restaurant in Paris, France",
+        "italian": "Italian restaurant in Paris, France",
+        "french": "French bistro restaurant in Paris, France",
+        "korean": "Korean restaurant in Paris, France",
+        "sushi": "sushi restaurant in Paris, France",
+        "ramen": "ramen restaurant in Paris, France",
+        "japanese": "Japanese restaurant in Paris, France",
+        "chinese": "Chinese restaurant in Paris, France",
+        "thai": "Thai restaurant in Paris, France",
+        "indian": "Indian restaurant in Paris, France",
+        "vietnamese": "Vietnamese restaurant in Paris, France",
+        "mexican": "Mexican taco restaurant in Paris, France",
+        "mediterranean": "Mediterranean restaurant in Paris, France",
+        "lebanese": "Lebanese restaurant in Paris, France",
+        "moroccan": "Moroccan restaurant in Paris, France",
+        "burger": "burger restaurant in Paris, France",
+        "steak": "steakhouse restaurant in Paris, France",
+        "seafood": "seafood restaurant in Paris, France",
+        "vegetarian": "vegetarian restaurant in Paris, France",
+        "brunch": "brunch cafe in Paris, France",
+        "bakery": "croissant bakery in Paris, France",
+        "coffee": "coffee shop in Paris, France",
+        "dessert": "dessert cafe in Paris, France",
+    }
+    return cuisine_queries.get(cuisine, f"{cuisine} restaurant in Paris, France")
+
+
+def _google_food_included_type(cuisine: str) -> str:
+    if cuisine == "bakery":
+        return "bakery"
+    if cuisine in {"coffee", "dessert", "brunch"}:
+        return "cafe"
+    return "restaurant"
+
+
+def _google_food_category(cuisine: str) -> str:
+    return "cafe" if cuisine in {"bakery", "coffee", "dessert", "brunch"} else "restaurant"
+
+
+def _food_rating_summary(*, rating: float, review_count: int, language: str) -> str:
+    if language == "en":
+        if rating and review_count:
+            return f"Google Maps rating {rating:.1f}/5 from about {review_count} reviews."
+        if rating:
+            return f"Google Maps rating {rating:.1f}/5."
+        return "Food stop selected near the route from Google Places."
+    if rating and review_count:
+        return f"Google Maps rating {rating:.1f}/5 from about {review_count} reviews."
+    if rating:
+        return f"Google Maps rating {rating:.1f}/5."
+    return "Food stop selected near the route from Google Places."
 
 
 def _map_category(place: dict[str, Any], forced_category: str | None) -> str | None:

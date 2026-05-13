@@ -20,7 +20,7 @@ const LOGIN_COPY = {
   ko: {
     eyebrow: "Google OAuth",
     title: "파리 여행 데이터를 안전하게 보관해요.",
-    description: "Google 계정으로 로그인하면 여행 계획, 예산, 예약, 다이어리 데이터를 계정과 함께 저장할 수 있습니다.",
+    description: "Google 계정으로 로그인하면 여행 계획, 예산, 숙소/항공권 검색, 다이어리 데이터를 계정과 함께 저장할 수 있습니다.",
     missingClientId: "`VITE_GOOGLE_CLIENT_ID`를 설정하면 실제 Google 로그인 버튼이 표시됩니다.",
     originBlocked:
       "현재 주소에서는 Google 로그인이 비활성화되어 있습니다. `VITE_GOOGLE_ALLOWED_ORIGINS`와 Google Cloud Console의 Authorized JavaScript origins를 확인해 주세요.",
@@ -33,7 +33,7 @@ const LOGIN_COPY = {
   en: {
     eyebrow: "Google OAuth",
     title: "Keep your Paris travel data safely in one place.",
-    description: "Sign in with Google to save your trip plans, budget, reservations, and diary to your account.",
+    description: "Sign in with Google to save your trip plans, budget, stay and flight searches, and diary to your account.",
     missingClientId: "Set `VITE_GOOGLE_CLIENT_ID` to show the real Google sign-in button.",
     originBlocked:
       "Google sign-in is disabled on this origin. Check `VITE_GOOGLE_ALLOWED_ORIGINS` and the Authorized JavaScript origins in Google Cloud Console.",

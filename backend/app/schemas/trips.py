@@ -14,6 +14,11 @@ class TripGenerateRequest(BaseModel):
     style_tags: list[str] = Field(default_factory=list)
 
 
+class TripAgentModifyRequest(BaseModel):
+    prompt: str = Field(..., min_length=3, max_length=1000)
+    target_day: int | None = Field(default=None, ge=1, le=30)
+
+
 class TripCreate(BaseModel):
     trip_title: str
     start_date: date | None = None
@@ -34,6 +39,13 @@ class ItineraryPlace(BaseModel):
     name: str
     coordinates: Coordinates | None = None
     category: str | None = None
+    cuisine: list[str] | str | None = None
+    admission_fee: str | None = None
+    admission_fee_amount: float | None = None
+    rating: float | None = None
+    review_count: int | None = None
+    google_place_id: str | None = None
+    google_maps_uri: str | None = None
 
 
 class RouteStep(BaseModel):

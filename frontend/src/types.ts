@@ -69,6 +69,13 @@ export type ItineraryPlace = {
   name: string;
   coordinates?: Coordinates | null;
   category?: string | null;
+  cuisine?: string[] | string | null;
+  admission_fee?: string | null;
+  admission_fee_amount?: number | null;
+  rating?: number | null;
+  review_count?: number | null;
+  google_place_id?: string | null;
+  google_maps_uri?: string | null;
 };
 
 export type RouteStep = {

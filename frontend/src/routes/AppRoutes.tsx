@@ -5,7 +5,8 @@ import { HomePage } from "../pages/HomePage";
 import { LoginPage } from "../pages/LoginPage";
 import { PlacesPage } from "../pages/PlacesPage";
 import { TripPlanPage } from "../pages/TripPlanPage";
-import { ReservationPage } from "../pages/ReservationPage";
+import { AccommodationSearchPage } from "../pages/AccommodationSearchPage";
+import { FlightSearchPage } from "../pages/FlightSearchPage";
 import { BudgetPage } from "../pages/BudgetPage";
 import { DiaryPage } from "../pages/DiaryPage";
 import { WeatherPage } from "../pages/WeatherPage";
@@ -22,7 +23,8 @@ export function AppRoutes() {
         <Route element={<ProtectedRoute />}>
           <Route path="/trip-plan" element={<TripPlanPage />} />
           <Route path="/trips/:tripId" element={<TripPlanPage />} />
-          <Route path="/reservations" element={<ReservationPage />} />
+          <Route path="/accommodations" element={<AccommodationSearchPage />} />
+          <Route path="/flights" element={<FlightSearchPage />} />
           <Route path="/budget" element={<BudgetPage />} />
           <Route path="/diary" element={<DiaryPage />} />
         </Route>

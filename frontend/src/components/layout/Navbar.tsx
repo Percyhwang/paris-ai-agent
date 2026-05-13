@@ -7,7 +7,8 @@ const NAV_LABELS = {
   ko: {
     places: "파리 스팟",
     tripPlan: "여행 플랜",
-    reservations: "예약 체크",
+    accommodations: "숙소 검색",
+    flights: "항공권 검색",
     budget: "예산",
     diary: "여행 기록",
     weather: "파리 날씨",
@@ -18,7 +19,8 @@ const NAV_LABELS = {
   en: {
     places: "Paris Spots",
     tripPlan: "Trip Plan",
-    reservations: "Reservations",
+    accommodations: "Stays",
+    flights: "Flights",
     budget: "Budget",
     diary: "Diary",
     weather: "Weather",
@@ -37,7 +39,8 @@ export function Navbar() {
   const navItems = [
     { to: "/places", label: copy.places },
     { to: "/trip-plan", label: copy.tripPlan },
-    { to: "/reservations", label: copy.reservations },
+    { to: "/accommodations", label: copy.accommodations },
+    { to: "/flights", label: copy.flights },
     { to: "/budget", label: copy.budget },
     { to: "/diary", label: copy.diary },
     { to: "/weather", label: copy.weather },

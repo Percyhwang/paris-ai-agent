@@ -31,6 +31,19 @@ export const tripService = {
     });
   },
 
+  modifyTripWithAgent(tripId: string, payload: { prompt: string; target_day?: number | null }): Promise<Trip> {
+    return apiRequest<Trip>(`/trips/${tripId}/agent-modify`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  deleteTrip(tripId: string): Promise<{ deleted: boolean }> {
+    return apiRequest<{ deleted: boolean }>(`/trips/${tripId}`, {
+      method: "DELETE",
+    });
+  },
+
   getItinerary(tripId: string): Promise<ItineraryDay[]> {
     return apiRequest<ItineraryDay[]>(`/trips/${tripId}/itinerary`);
   },

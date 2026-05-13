@@ -219,7 +219,54 @@ FEATURED_PLACES: list[dict[str, Any]] = [
     },
 ]
 
-OSM_PLACES_PATH = Path(__file__).resolve().parents[2] / "data_assets" / "paris_places_clean.json"
+DATA_ASSETS_PATH = Path(__file__).resolve().parents[2] / "data_assets"
+OSM_PLACES_PATH = DATA_ASSETS_PATH / "paris_places_clean.json"
+OSM_RAW_PATH = DATA_ASSETS_PATH / "paris_osm.geojson"
+
+PARIS_LAT_MIN = 48.80
+PARIS_LAT_MAX = 48.90
+PARIS_LNG_MIN = 2.20
+PARIS_LNG_MAX = 2.47
+
+CUISINE_FALLBACKS: dict[str, set[str]] = {
+    "pasta": {"pasta", "italian"},
+    "pizza": {"pizza", "italian"},
+    "italian": {"italian", "pasta", "pizza"},
+    "french": {"french", "bistro", "brasserie", "regional"},
+    "sushi": {"sushi", "japanese"},
+    "ramen": {"ramen", "japanese"},
+    "japanese": {"japanese", "sushi", "ramen"},
+    "vietnamese": {"vietnamese", "pho", "banh_mi"},
+    "mexican": {"mexican", "taco"},
+    "mediterranean": {"mediterranean"},
+    "lebanese": {"lebanese"},
+    "moroccan": {"moroccan"},
+    "steak": {"steak", "steakhouse"},
+    "seafood": {"seafood", "fish"},
+    "vegetarian": {"vegetarian", "vegan"},
+    "brunch": {"brunch", "breakfast"},
+    "bakery": {"bakery", "croissant"},
+    "coffee": {"coffee", "coffee_shop", "coffeeshop"},
+    "dessert": {"dessert", "cake", "ice_cream", "waffles"},
+}
+
+ADMISSION_FEE_BY_SLUG: dict[str, float] = {
+    "eiffel-tower": 36.7,
+    "louvre-museum": 32,
+    "musee-dorsay": 16,
+    "arc-de-triomphe": 22,
+    "sainte-chapelle": 22,
+    "palais-garnier": 25,
+}
+
+ADMISSION_FEE_LABEL_BY_SLUG: dict[str, str] = {
+    "eiffel-tower": "Top lift ticket: 36.70 EUR adult",
+    "louvre-museum": "General admission: 32 EUR non-EEA adult / 22 EUR EEA adult",
+    "musee-dorsay": "Online general admission: 16 EUR adult",
+    "arc-de-triomphe": "Individual ticket: 22 EUR Apr-Sep, 16 EUR Wed or Oct-Mar",
+    "sainte-chapelle": "Individual ticket: 22 EUR non-EEA adult / 16 EUR EEA adult",
+    "palais-garnier": "Self-guided tour: 25 EUR full price",
+}
 
 THEME_CATEGORY_WEIGHTS = {
     "museum": {"museum": 4.0, "landmark": 1.5},
@@ -285,7 +332,164 @@ def normalize_text(text: str) -> str:
     return "".join(pieces)
 
 
+def _name_key(value: Any) -> str:
+    raw = str(value or "").strip().casefold()
+    return normalize_text(raw) or raw
+
+
+def _coordinate_key(place: dict[str, Any]) -> str:
+    coordinates = place.get("coordinates") or {}
+    try:
+        lat = float(coordinates.get("lat"))
+        lng = float(coordinates.get("lng"))
+    except (TypeError, ValueError):
+        return ""
+    return f"{lat:.4f},{lng:.4f}"
+
+
+def _place_slug(place: dict[str, Any]) -> str:
+    return str(place.get("slug") or place.get("place_id") or "")
+
+
+def _is_place_used(
+    place: dict[str, Any],
+    *,
+    used_slugs: set[str],
+    used_names: set[str],
+    used_coordinates: set[str],
+) -> bool:
+    slug = _place_slug(place)
+    name = _name_key(place.get("name"))
+    coordinates = _coordinate_key(place)
+    return bool(
+        (slug and slug in used_slugs)
+        or (name and name in used_names)
+        or (coordinates and coordinates in used_coordinates)
+    )
+
+
+def _mark_place_used(
+    place: dict[str, Any],
+    *,
+    used_slugs: set[str],
+    used_names: set[str],
+    used_coordinates: set[str],
+) -> None:
+    slug = _place_slug(place)
+    name = _name_key(place.get("name"))
+    coordinates = _coordinate_key(place)
+    if slug:
+        used_slugs.add(slug)
+    if name:
+        used_names.add(name)
+    if coordinates:
+        used_coordinates.add(coordinates)
+
+
 ALIASES = {normalize_text(key): value for key, value in RAW_ALIASES.items()}
+
+
+def _admission_fee_amount(place: dict[str, Any]) -> float | None:
+    amount = place.get("admission_fee_amount")
+    if amount is not None:
+        return float(amount)
+    slug = str(place.get("slug") or "")
+    if slug in ADMISSION_FEE_BY_SLUG:
+        return ADMISSION_FEE_BY_SLUG[slug]
+    return None
+
+
+def _admission_fee_label(place: dict[str, Any]) -> str | None:
+    slug = str(place.get("slug") or "")
+    return ADMISSION_FEE_LABEL_BY_SLUG.get(slug) or place.get("admission_fee")
+
+
+def _split_cuisine_terms(value: Any) -> list[str]:
+    raw = str(value or "").lower().replace("_", ";")
+    terms = [term.strip() for term in re.split(r"[;,\s/]+", raw) if term.strip()]
+    return list(dict.fromkeys(terms))
+
+
+def _in_paris_bounds(lat: float, lng: float) -> bool:
+    return PARIS_LAT_MIN <= lat <= PARIS_LAT_MAX and PARIS_LNG_MIN <= lng <= PARIS_LNG_MAX
+
+
+def _meal_popularity(props: dict[str, Any], cuisine_terms: list[str], category: str) -> int:
+    score = 42 if category == "restaurant" else 35
+    if cuisine_terms:
+        score += 4
+    if props.get("website") or props.get("contact:website"):
+        score += 2
+    if props.get("contact:tripadvisor") or props.get("michelin"):
+        score += 4
+    return min(score, 65)
+
+
+def _load_osm_food_places(
+    *,
+    existing_names: set[str],
+    start_index: int,
+) -> list[dict[str, Any]]:
+    if not OSM_RAW_PATH.exists():
+        return []
+
+    try:
+        raw = json.loads(OSM_RAW_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    places: list[dict[str, Any]] = []
+    for offset, feature in enumerate(raw.get("features") or []):
+        props = feature.get("properties") or {}
+        amenity = str(props.get("amenity") or "").lower()
+        if amenity not in {"restaurant", "cafe"}:
+            continue
+
+        name = str(props.get("name") or "").strip()
+        if len(name) < 4:
+            continue
+
+        coordinates = (feature.get("geometry") or {}).get("coordinates")
+        if not isinstance(coordinates, list) or len(coordinates) < 2:
+            continue
+        lng = float(coordinates[0])
+        lat = float(coordinates[1])
+        if not _in_paris_bounds(lat, lng):
+            continue
+
+        normalized_name = normalize_text(name)
+        if normalized_name in existing_names:
+            continue
+        existing_names.add(normalized_name)
+
+        category = "restaurant" if amenity == "restaurant" else "cafe"
+        cuisine_terms = _split_cuisine_terms(props.get("cuisine") or props.get("cuisine:fr"))
+        tags = [category, "paris", "foodie", *cuisine_terms]
+        if category == "cafe":
+            tags.append("cafe")
+        place_index = start_index + offset
+        cuisine_label = ", ".join(cuisine_terms[:3]) if cuisine_terms else category
+        places.append(
+            {
+                "slug": f"osm-{normalize_text(name)}-{place_index}",
+                "name": name,
+                "category": category,
+                "coordinates": {"lat": lat, "lng": lng},
+                "image_url": "/images/paris-default-hero.jpeg",
+                "short_description": f"Paris {cuisine_label} spot selected from OSM data near the route.",
+                "full_description": f"{name} is a Paris {cuisine_label} place that can be matched to food-specific itinerary edits.",
+                "history": "",
+                "photo_spot_tips": [name, "Nearby streets", "Meal stop"],
+                "estimated_visit_duration": "1 hour",
+                "admission_fee": None,
+                "location": str(props.get("addr:street") or props.get("addr:full") or "Paris"),
+                "tags": list(dict.fromkeys(tags)),
+                "cuisine": cuisine_terms,
+                "popularity": _meal_popularity(props, cuisine_terms, category),
+                "source": "osm",
+            }
+        )
+    return places
 
 
 def _load_osm_places() -> list[dict[str, Any]]:
@@ -327,7 +531,8 @@ def _load_osm_places() -> list[dict[str, Any]]:
                 "source": "osm",
             }
         )
-    return places
+    existing_names = {normalize_text(str(place.get("name") or "")) for place in places}
+    return places + _load_osm_food_places(existing_names=existing_names, start_index=len(places))
 
 
 FEATURED_BY_SLUG = {place["slug"]: place for place in FEATURED_PLACES}
@@ -348,10 +553,13 @@ def export_place(place: dict[str, Any]) -> dict[str, Any]:
         "history": place["history"],
         "photo_spot_tips": list(place["photo_spot_tips"]),
         "estimated_visit_duration": place["estimated_visit_duration"],
-        "admission_fee": place["admission_fee"],
+        "admission_fee": _admission_fee_label(place),
         "location": place["location"],
         "tags": list(place["tags"]),
+        "cuisine": place.get("cuisine"),
+        "admission_fee_amount": _admission_fee_amount(place),
         "popularity": place["popularity"],
+        "rating": place.get("rating"),
         "source": place.get("source", "featured"),
     }
 
@@ -463,8 +671,6 @@ def search_places(
 ) -> list[dict[str, Any]]:
     normalized_search = normalize_text(search)
     normalized_category = category.strip().lower()
-    if normalized_category == "restaurant":
-        normalized_category = "cafe"
     items = CATALOG
 
     if normalized_search:
@@ -502,7 +708,9 @@ def recommend_places(
             continue
         if venue_type == "attraction" and place["category"] == "cafe":
             continue
-        if venue_type in {"cafe", "restaurant"} and place["category"] not in {"cafe", "neighborhood"}:
+        if venue_type == "cafe" and place["category"] not in {"cafe", "neighborhood"}:
+            continue
+        if venue_type == "restaurant" and place["category"] not in {"restaurant", "cafe", "neighborhood"}:
             continue
         score = _score_place(place, categories=categories, themes=themes, anchor=resolved_anchor)
         picks.append((score, place))
@@ -510,11 +718,23 @@ def recommend_places(
     picks.sort(key=lambda item: item[0], reverse=True)
     results: list[dict[str, Any]] = []
     used_slugs: set[str] = set()
+    used_names: set[str] = set()
+    used_coordinates: set[str] = set()
 
     for requested in must_include or []:
         resolved = resolve_place(requested)
-        if resolved and resolved["slug"] not in used_slugs:
-            used_slugs.add(resolved["slug"])
+        if resolved and not _is_place_used(
+            resolved,
+            used_slugs=used_slugs,
+            used_names=used_names,
+            used_coordinates=used_coordinates,
+        ):
+            _mark_place_used(
+                resolved,
+                used_slugs=used_slugs,
+                used_names=used_names,
+                used_coordinates=used_coordinates,
+            )
             results.append(
                 {
                     **export_place(resolved),
@@ -526,9 +746,19 @@ def recommend_places(
     for _, place in picks:
         if len(results) >= count:
             break
-        if place["slug"] in used_slugs:
+        if _is_place_used(
+            place,
+            used_slugs=used_slugs,
+            used_names=used_names,
+            used_coordinates=used_coordinates,
+        ):
             continue
-        used_slugs.add(place["slug"])
+        _mark_place_used(
+            place,
+            used_slugs=used_slugs,
+            used_names=used_names,
+            used_coordinates=used_coordinates,
+        )
         results.append(
             {
                 **export_place(place),
@@ -545,6 +775,8 @@ def _select_support_places(
     themes: list[str],
     daily_slots: list[str],
     used_slugs: set[str],
+    used_names: set[str],
+    used_coordinates: set[str],
 ) -> list[dict[str, Any]]:
     categories = _build_category_weights("mixed", themes)
     theme_set = {normalize_text(theme) for theme in themes}
@@ -555,7 +787,12 @@ def _select_support_places(
         (
             place
             for place in CATALOG
-            if place["slug"] not in used_slugs
+            if not _is_place_used(
+                place,
+                used_slugs=used_slugs,
+                used_names=used_names,
+                used_coordinates=used_coordinates,
+            )
             and place["slug"] != anchor["slug"]
             and (
                 not prefer_featured
@@ -567,24 +804,33 @@ def _select_support_places(
     )
     picks: list[dict[str, Any]] = []
     day_used_slugs: set[str] = set()
+    day_used_names: set[str] = set()
+    day_used_coordinates: set[str] = set()
 
     for slot in daily_slots:
-        if slot == "morning":
+        if slot == "morning" and not picks:
             picks.append(anchor)
-            day_used_slugs.add(anchor["slug"])
+            _mark_place_used(
+                anchor,
+                used_slugs=day_used_slugs,
+                used_names=day_used_names,
+                used_coordinates=day_used_coordinates,
+            )
             continue
         candidate = next(
             (
                 place
                 for place in ordered
-                if place["slug"] not in day_used_slugs
+                if not _is_place_used(
+                    place,
+                    used_slugs=day_used_slugs,
+                    used_names=day_used_names,
+                    used_coordinates=day_used_coordinates,
+                )
                 and (
                     (
                         slot == "lunch"
-                        and (
-                            (prefer_cafe and place["category"] in {"cafe", "neighborhood"})
-                            or (not prefer_cafe and place["category"] in {"neighborhood", "park", "landmark", "museum", "cathedral"})
-                        )
+                        and place["category"] in {"restaurant", "cafe", "neighborhood"}
                     )
                     or (slot == "afternoon" and place["category"] in {"museum", "landmark", "neighborhood", "park", "cathedral"})
                     or (slot == "evening" and place["category"] in {"landmark", "neighborhood", "cafe"})
@@ -593,7 +839,7 @@ def _select_support_places(
             None,
         )
         if candidate is None:
-            candidate_pool = FEATURED_PLACES if prefer_featured else CATALOG
+            candidate_pool = CATALOG
             candidate = next(
                 (
                     place
@@ -602,12 +848,31 @@ def _select_support_places(
                         key=lambda item: _score_place(item, categories=categories, themes=themes, anchor=anchor),
                         reverse=True,
                     )
-                    if place["slug"] not in day_used_slugs and place["slug"] != anchor["slug"]
+                    if not _is_place_used(
+                        place,
+                        used_slugs=day_used_slugs,
+                        used_names=day_used_names,
+                        used_coordinates=day_used_coordinates,
+                    )
+                    and not _is_place_used(
+                        place,
+                        used_slugs=used_slugs,
+                        used_names=used_names,
+                        used_coordinates=used_coordinates,
+                    )
+                    and place["slug"] != anchor["slug"]
                 ),
-                anchor,
+                None,
             )
+        if candidate is None:
+            continue
         picks.append(candidate)
-        day_used_slugs.add(candidate["slug"])
+        _mark_place_used(
+            candidate,
+            used_slugs=day_used_slugs,
+            used_names=day_used_names,
+            used_coordinates=day_used_coordinates,
+        )
     return picks
 
 
@@ -632,33 +897,67 @@ def build_itinerary(create_plan_payload: dict[str, Any]) -> dict[str, Any]:
         venue_seed = [dict(place) for place in FEATURED_PLACES[: max(4, days)]]
 
     slot_templates = {
-        "slow": ["morning", "afternoon"],
-        "normal": ["morning", "lunch", "afternoon"],
-        "fast": ["morning", "lunch", "afternoon", "evening"],
+        "slow": [
+            ("morning", "10:00"),
+            ("lunch", "12:30"),
+            ("afternoon", "15:30"),
+        ],
+        "normal": [
+            ("morning", "09:00"),
+            ("morning", "10:45"),
+            ("lunch", "12:30"),
+            ("afternoon", "14:30"),
+            ("evening", "18:30"),
+        ],
+        "fast": [
+            ("morning", "08:30"),
+            ("morning", "10:00"),
+            ("lunch", "12:00"),
+            ("afternoon", "13:45"),
+            ("afternoon", "15:30"),
+            ("evening", "18:00"),
+            ("evening", "20:00"),
+        ],
     }
-    daily_slots = slot_templates.get(pace, slot_templates["normal"])
+    daily_template = slot_templates.get(pace, slot_templates["normal"])
+    daily_slots = [slot for slot, _ in daily_template]
     used_slugs: set[str] = set()
+    used_names: set[str] = set()
+    used_coordinates: set[str] = set()
     itinerary_days: list[dict[str, Any]] = []
     route_names: list[str] = []
 
     for day_number in range(1, days + 1):
-        anchor = venue_seed[(day_number - 1) % len(venue_seed)]
+        anchor = next(
+            (
+                venue_seed[(day_number - 1 + offset) % len(venue_seed)]
+                for offset in range(len(venue_seed))
+                if not _is_place_used(
+                    venue_seed[(day_number - 1 + offset) % len(venue_seed)],
+                    used_slugs=used_slugs,
+                    used_names=used_names,
+                    used_coordinates=used_coordinates,
+                )
+            ),
+            venue_seed[(day_number - 1) % len(venue_seed)],
+        )
         supports = _select_support_places(
             anchor,
             themes=themes,
             daily_slots=daily_slots,
             used_slugs=used_slugs,
+            used_names=used_names,
+            used_coordinates=used_coordinates,
         )
         items: list[dict[str, Any]] = []
-        for index, (slot, place) in enumerate(zip(daily_slots, supports), start=1):
-            used_slugs.add(place["slug"])
+        for index, ((slot, start_time), place) in enumerate(zip(daily_template, supports), start=1):
+            _mark_place_used(
+                place,
+                used_slugs=used_slugs,
+                used_names=used_names,
+                used_coordinates=used_coordinates,
+            )
             route_names.append(place["name"])
-            start_time = {
-                "morning": "09:00",
-                "lunch": "12:30",
-                "afternoon": "15:00",
-                "evening": "19:00",
-            }[slot]
             items.append(
                 {
                     "id": f"{day_number}-{place['slug']}-{index}",
@@ -670,6 +969,9 @@ def build_itinerary(create_plan_payload: dict[str, Any]) -> dict[str, Any]:
                         "name": place["name"],
                         "coordinates": dict(place["coordinates"]),
                         "category": place["category"],
+                        "cuisine": place.get("cuisine"),
+                        "admission_fee": _admission_fee_label(place),
+                        "admission_fee_amount": _admission_fee_amount(place),
                     },
                     "description": place["short_description"],
                     "estimated_duration": place["estimated_visit_duration"],
@@ -732,6 +1034,9 @@ def _build_itinerary_item_from_place(
             "name": place["name"],
             "coordinates": dict(place["coordinates"]),
             "category": place["category"],
+            "cuisine": place.get("cuisine"),
+            "admission_fee": _admission_fee_label(place),
+            "admission_fee_amount": _admission_fee_amount(place),
         },
         "description": place["short_description"],
         "estimated_duration": place["estimated_visit_duration"],
@@ -745,9 +1050,185 @@ def _find_item_index(items: list[dict[str, Any]], place_name: str | None) -> int
     normalized_name = normalize_text(place_name)
     for index, item in enumerate(items):
         item_name = str(((item.get("place") or {}).get("name")) or item.get("title") or "")
-        if normalize_text(item_name) == normalized_name:
+        normalized_item_name = normalize_text(item_name)
+        if (
+            normalized_item_name == normalized_name
+            or normalized_name in normalized_item_name
+            or normalized_item_name in normalized_name
+        ):
             return index
     return None
+
+
+def _find_slot_item_index(items: list[dict[str, Any]], target_slot: str | None) -> int | None:
+    if not target_slot:
+        return None
+    normalized_slot = {"dinner": "evening", "night": "evening"}.get(target_slot, target_slot)
+    return next(
+        (index for index, item in enumerate(items) if item.get("time_slot") == normalized_slot),
+        None,
+    )
+
+
+def _replacement_categories(category: str | None, target_slot: str | None) -> set[str]:
+    if category in {"restaurant", "food", "foodie"}:
+        return {"restaurant", "cafe"}
+    if category == "cafe":
+        return {"cafe", "neighborhood"}
+    if category == "night_view":
+        return {"landmark", "neighborhood"}
+    if category:
+        return {category}
+    if target_slot == "lunch":
+        return {"restaurant", "cafe", "neighborhood"}
+    return {"landmark", "museum", "neighborhood", "park", "cathedral"}
+
+
+def _item_coordinates(item: dict[str, Any]) -> dict[str, float] | None:
+    coordinates = (item.get("place") or {}).get("coordinates")
+    if not isinstance(coordinates, dict):
+        return None
+    lat = coordinates.get("lat")
+    lng = coordinates.get("lng")
+    if lat is None or lng is None:
+        return None
+    return {"lat": float(lat), "lng": float(lng)}
+
+
+def _candidate_route_distance(
+    place: dict[str, Any],
+    *,
+    items: list[dict[str, Any]],
+    replace_index: int | None,
+) -> float:
+    if replace_index is None:
+        return 0.0
+
+    anchors: list[dict[str, float]] = []
+    previous_coordinates = _item_coordinates(items[replace_index - 1]) if replace_index > 0 else None
+    next_coordinates = _item_coordinates(items[replace_index + 1]) if replace_index + 1 < len(items) else None
+    if previous_coordinates:
+        anchors.append(previous_coordinates)
+    if next_coordinates:
+        anchors.append(next_coordinates)
+    if not anchors:
+        return 0.0
+
+    return sum(_distance_km(place["coordinates"], anchor) for anchor in anchors)
+
+
+def _candidate_route_distance_rank(
+    place: dict[str, Any],
+    *,
+    items: list[dict[str, Any]],
+    replace_index: int | None,
+) -> float:
+    return round(_candidate_route_distance(place, items=items, replace_index=replace_index), 2)
+
+
+def _candidate_rating_score(place: dict[str, Any]) -> float:
+    return float(place.get("rating") or place.get("popularity") or 0)
+
+
+def _desired_cuisine_terms(cuisine: Any) -> set[str]:
+    primary = str(cuisine or "").strip().lower()
+    if not primary:
+        return set()
+    return CUISINE_FALLBACKS.get(primary, {primary})
+
+
+def _primary_cuisine_term(cuisine: Any) -> str:
+    return str(cuisine or "").strip().lower()
+
+
+def _place_cuisine_terms(place: dict[str, Any]) -> set[str]:
+    terms: set[str] = set()
+    cuisine = place.get("cuisine")
+    if isinstance(cuisine, list):
+        for item in cuisine:
+            terms.update(_split_cuisine_terms(item))
+    else:
+        terms.update(_split_cuisine_terms(cuisine))
+    terms.update(str(tag).lower() for tag in place.get("tags") or [])
+    return terms
+
+
+def _matches_cuisine(place: dict[str, Any], cuisine: Any) -> bool:
+    desired = _desired_cuisine_terms(cuisine)
+    if not desired:
+        return True
+    if _place_cuisine_terms(place) & desired:
+        return True
+    haystack = normalize_text(
+        " ".join(
+            [
+                str(place.get("name") or ""),
+                str(place.get("short_description") or ""),
+                str(place.get("full_description") or ""),
+            ]
+        )
+    )
+    return any(normalize_text(term) in haystack for term in desired)
+
+
+def _matches_primary_cuisine(place: dict[str, Any], cuisine: Any) -> bool:
+    primary = _primary_cuisine_term(cuisine)
+    if not primary:
+        return True
+    if primary in _place_cuisine_terms(place):
+        return True
+    haystack = normalize_text(
+        " ".join(
+            [
+                str(place.get("name") or ""),
+                str(place.get("short_description") or ""),
+                str(place.get("full_description") or ""),
+            ]
+        )
+    )
+    return normalize_text(primary) in haystack
+
+
+def _pick_replacement_place(
+    *,
+    category: str | None,
+    target_slot: str | None,
+    items: list[dict[str, Any]],
+    replace_index: int | None,
+    cuisine: Any = None,
+) -> dict[str, Any] | None:
+    allowed_categories = _replacement_categories(category, target_slot)
+    used_place_ids = {
+        str((item.get("place") or {}).get("place_id") or "")
+        for item in items
+    }
+    used_names = {
+        normalize_text(str((item.get("place") or {}).get("name") or item.get("title") or ""))
+        for item in items
+    }
+
+    base_candidates = [
+        place
+        for place in CATALOG
+        if place["category"] in allowed_categories
+        and place["slug"] not in used_place_ids
+        and normalize_text(place["name"]) not in used_names
+    ]
+    primary_cuisine_candidates = (
+        [place for place in base_candidates if _matches_primary_cuisine(place, cuisine)] if cuisine else []
+    )
+    cuisine_candidates = [place for place in base_candidates if _matches_cuisine(place, cuisine)] if cuisine else []
+    candidates = sorted(
+        primary_cuisine_candidates or cuisine_candidates or base_candidates,
+        key=lambda place: (
+            _candidate_route_distance_rank(place, items=items, replace_index=replace_index),
+            -_candidate_rating_score(place),
+            place["category"] != ("restaurant" if cuisine else "cafe"),
+            place["slug"] not in FEATURED_BY_SLUG,
+            place["name"],
+        ),
+    )
+    return export_place(candidates[0]) if candidates else None
 
 
 def _rebuild_selected_places(itinerary_days: list[dict[str, Any]]) -> list[str]:
@@ -797,6 +1278,16 @@ def apply_modifications(
         elif op == "replace":
             replace_index = _find_item_index(items, from_place)
             replacement = resolve_place(to_place)
+            if replace_index is None:
+                replace_index = _find_slot_item_index(items, target_slot)
+            if replacement is None:
+                replacement = _pick_replacement_place(
+                    category=operation.get("category") or patch.get("to_category"),
+                    target_slot=target_slot,
+                    items=items,
+                    replace_index=replace_index,
+                    cuisine=patch.get("cuisine"),
+                )
             if replace_index is not None and replacement is not None:
                 slot = str(items[replace_index].get("time_slot") or target_slot)
                 items[replace_index] = _build_itinerary_item_from_place(

@@ -5,8 +5,8 @@ from app.api.deps import get_current_user
 from app.core.i18n import normalize_language
 from app.core.responses import api_ok
 from app.db.mongodb import get_database, get_optional_database
-from app.schemas.trips import TripCreate, TripGenerateRequest, TripUpdate
-from app.services.agent_service import generate_trip_payload
+from app.schemas.trips import TripAgentModifyRequest, TripCreate, TripGenerateRequest, TripUpdate
+from app.services.agent_service import generate_trip_payload, modify_trip_with_agent
 from app.services.trip_service import create_generated_trip, create_trip, delete_trip, get_trip_detail, list_user_trips, update_trip
 
 router = APIRouter()
@@ -68,6 +68,19 @@ async def patch_trip_route(
 ) -> dict:
     trip = await update_trip(db, current_user["id"], trip_id, payload)
     return api_ok(trip, "Trip updated")
+
+
+@router.post("/{trip_id}/agent-modify")
+async def agent_modify_trip_route(
+    request: Request,
+    trip_id: str,
+    payload: TripAgentModifyRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> dict:
+    language = normalize_language(request.headers.get("accept-language"))
+    trip = await modify_trip_with_agent(db, current_user["id"], trip_id, payload, language=language)
+    return api_ok(trip, "Trip modified by agent")
 
 
 @router.delete("/{trip_id}")

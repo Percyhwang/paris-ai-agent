@@ -1191,6 +1191,12 @@ textarea {
   background: rgba(255, 250, 242, 0.72);
 }
 
+.danger-button {
+  border-color: rgba(138, 45, 34, 0.24);
+  color: #8a2d22;
+  background: rgba(186, 65, 42, 0.1);
+}
+
 .small {
   min-height: 30px;
   padding: 0 10px;
@@ -1627,14 +1633,61 @@ textarea {
   box-shadow: var(--shadow);
 }
 
+.map-canvas {
+  position: relative;
+  min-height: 300px;
+}
+
 .map-viewer iframe {
   width: 100%;
   height: 300px;
   border: 0;
+  display: block;
 }
 
 .map-viewer.compact iframe {
   height: 150px;
+}
+
+.map-viewer.compact .map-canvas {
+  min-height: 150px;
+}
+
+.map-route-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.map-route-overlay polyline {
+  fill: none;
+  stroke: #c85f3e;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 2px 2px rgba(36, 27, 22, 0.28));
+  vector-effect: non-scaling-stroke;
+}
+
+.map-route-overlay circle {
+  fill: #fffaf2;
+  stroke: #c85f3e;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.map-route-overlay text {
+  fill: #2f5c7c;
+  font-size: 4px;
+  font-weight: 900;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  paint-order: stroke;
+  stroke: #fffaf2;
+  stroke-width: 0.8px;
 }
 
 .map-route-list {
@@ -1642,6 +1695,46 @@ textarea {
   gap: 7px;
   padding: 14px;
   color: var(--muted);
+}
+
+.map-route-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.map-route-head a,
+.place-search-link {
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.place-search-link:hover,
+.map-route-head a:hover {
+  text-decoration: underline;
+}
+
+.search-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.search-panel,
+.search-placeholder {
+  border: 1px solid rgba(77, 53, 37, 0.1);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  background: rgba(255, 250, 242, 0.72);
+}
+
+.search-placeholder {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  line-height: 1.55;
 }
 
 .day-tabs {
@@ -1690,6 +1783,68 @@ textarea {
 .section-heading p {
   color: var(--muted);
   line-height: 1.58;
+}
+
+.trip-title-header,
+.trip-actions,
+.trip-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.trip-title-header {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.trip-title-header > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.trip-actions,
+.trip-edit-actions {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.trip-actions {
+  justify-content: flex-end;
+}
+
+.trip-edit-actions {
+  justify-content: flex-start;
+}
+
+.trip-edit-form {
+  margin-top: 4px;
+}
+
+.agent-edit-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  border: 1px solid rgba(77, 53, 37, 0.1);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  background: rgba(255, 250, 242, 0.62);
+}
+
+.agent-edit-panel label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.agent-edit-panel textarea {
+  min-height: 78px;
+  resize: vertical;
+  line-height: 1.5;
 }
 
 .timeline {
@@ -1893,6 +2048,13 @@ textarea {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 900;
+}
+
+.trip-page-actions {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
 }
 
 .stacked-form {
@@ -2249,6 +2411,23 @@ textarea {
     position: static;
   }
 
+  .trip-title-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trip-page-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .trip-actions {
+    justify-content: flex-start;
+  }
+
+  .agent-edit-panel {
+    grid-template-columns: 1fr;
+  }
+
   .modal-image-frame {
     min-height: 240px;
   }
@@ -2344,7 +2523,8 @@ textarea {
   .timeline-card,
   .route-leg-card,
   .place-grid,
-  .weather-grid {
+  .weather-grid,
+  .search-workspace {
     grid-template-columns: 1fr;
   }
 
