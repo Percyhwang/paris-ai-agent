@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Travel Agent</title>
+
+    <style>
+      body {
+        width: 360px;
+        padding: 14px;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: linear-gradient(180deg, #f5f7fb 0%, #eef2f7 100%);
+        color: #152033;
+      }
+
+      h3 {
+        margin-top: 0;
+        margin-bottom: 12px;
+      }
+
+      .field {
+        margin-bottom: 10px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+
+      input {
+        width: 100%;
+        padding: 6px;
+        box-sizing: border-box;
+      }
+
+      button {
+        width: 100%;
+        padding: 10px;
+        margin-top: 10px;
+        cursor: pointer;
+        border: 0;
+        border-radius: 10px;
+        background: #0f5cc0;
+        color: white;
+        font-weight: 600;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        margin-top: 10px;
+        font-size: 12px;
+      }
+
+      textarea {
+        width: 100%;
+        padding: 6px;
+        box-sizing: border-box;
+        font-size: 12px;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+        background: white;
+      }
+
+      .panel {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 14px;
+        background: white;
+        border: 1px solid #d9e2ef;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+      }
+
+      .panel-title {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .recommendations {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .recommendation-card {
+        border: 1px solid #d9e2ef;
+        border-radius: 12px;
+        padding: 10px;
+        background: #f8fbff;
+      }
+
+      .recommendation-card.selected {
+        border-color: #0f5cc0;
+        background: #eef5ff;
+      }
+
+      .recommendation-rank {
+        font-size: 11px;
+        font-weight: 700;
+        color: #0f5cc0;
+      }
+
+      .recommendation-name {
+        margin: 4px 0 6px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .recommendation-meta {
+        font-size: 12px;
+        color: #475569;
+        margin-bottom: 6px;
+      }
+
+      .recommendation-signals {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+
+      .signal-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 8px;
+        background: #dbeafe;
+        color: #1d4ed8;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .recommendation-reasons {
+        font-size: 12px;
+        color: #1e293b;
+        margin-bottom: 8px;
+      }
+
+      .recommendation-card button {
+        margin-top: 0;
+        background: #e2e8f0;
+        color: #0f172a;
+      }
+
+      .recommendation-card.selected button {
+        background: #0f5cc0;
+        color: white;
+      }
+
+      .helper {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #64748b;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h3>Travel AI Agent</h3>
+
+    <div class="field">
+      <label>Natural Language Request</label>
+      <textarea id="naturalLanguageTextarea" rows="5">
+    7월 10일부터 7월 15일까지 파리 여행 가고 싶어. 성인 2명이고 에펠탑 근처 호텔이면 좋겠어.
+      </textarea>
+    </div>  
+
+    <div class="field">
+      <label>Booking Payload JSON</label>
+      <textarea id="payloadTextarea" rows="10">
+  {
+    "site": "booking.com",
+    "payload": {
+      "destination": "Paris",
+      "checkIn": "2026-07-10",
+      "checkOut": "2026-07-15",
+      "adults": 2
+    }
+  }
+      </textarea>
+    </div>
+
+    <button id="convertRequestButton">
+      Convert Request
+    </button>
+
+    <button id="openDashboardButton">Open Local Dashboard</button>
+
+    <button id="runFlowButton">Run Booking Flow</button>
+
+    <button id="recommendTopHotelsButton">Recommend Top 3 Hotels</button>
+
+    <button id="clickBestMatchedHotelButton">Recommend Best Match</button>
+
+    <button id="confirmHotelSelectionButton">Confirm Selected Hotel</button>
+
+    <div class="panel">
+      <p class="panel-title">Top Recommendations</p>
+      <div id="recommendations" class="recommendations"></div>
+      <div id="recommendationHelper" class="helper">
+        호텔 추천을 실행하면 이곳에 상위 후보와 추천 이유가 표시됩니다.
+      </div>
+    </div>
+
+    <pre id="result"></pre>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

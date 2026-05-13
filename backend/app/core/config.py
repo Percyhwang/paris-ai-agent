@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     external_agent_api_url: str | None = None
     llm_diary_api_url: str | None = None
 
+    rapidapi_key: str | None = None
+    kiwi_rapidapi_host: str = "kiwi-com-flights-api.p.rapidapi.com"
+    booking_rapidapi_host: str = "booking-com15.p.rapidapi.com"
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

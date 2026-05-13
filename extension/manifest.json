@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Travel AI Booking Agent",
+  "version": "0.1.0",
+  "description": "Assist travel booking flow for flights and hotels.",
+  "permissions": ["tabs", "scripting", "activeTab"],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "https://www.koreanair.com/*",
+    "https://www.booking.com/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.koreanair.com/*",
+        "https://www.booking.com/*"
+      ],
+      "js": ["content/booking-com.js", "content/content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Travel Agent"
+  }
+}

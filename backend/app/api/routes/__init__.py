@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import auth, budgets, diary, itinerary, places, reservations, trips, users, weather
+from app.api.routes import auth, budgets, diary, flights, hotels, itinerary, places, reservations, trips, users, weather
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -12,3 +12,5 @@ api_router.include_router(reservations.router, prefix="/trips", tags=["reservati
 api_router.include_router(diary.router, prefix="/trips", tags=["diary"])
 api_router.include_router(places.router, prefix="/places", tags=["places"])
 api_router.include_router(weather.router, prefix="/weather", tags=["weather"])
+api_router.include_router(flights.router, prefix="/flights", tags=["flights"])
+api_router.include_router(hotels.router, prefix="/hotels", tags=["hotels"])

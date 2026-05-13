@@ -1717,8 +1717,7 @@ textarea {
 
 .search-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
-  gap: 16px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -1735,6 +1734,492 @@ textarea {
   gap: 8px;
   color: var(--muted);
   line-height: 1.55;
+}
+
+/* ── Booking search panel ── */
+.booking-search-panel {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  background: linear-gradient(160deg, rgba(255, 250, 242, 0.96), rgba(255, 244, 234, 0.88));
+  box-shadow: var(--shadow-soft);
+}
+
+.booking-search-panel .stacked-form {
+  gap: 14px;
+}
+
+.booking-search-panel label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.booking-search-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  border: 1px solid rgba(66, 93, 123, 0.24);
+  border-radius: 999px;
+  padding: 0 16px;
+  color: var(--blue);
+  background: rgba(66, 93, 123, 0.08);
+  font-weight: 900;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.secondary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(66, 93, 123, 0.38);
+  box-shadow: 0 10px 22px rgba(49, 71, 93, 0.14);
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.error-message {
+  border-radius: 14px;
+  padding: 11px 14px;
+  color: #8a2d22;
+  background: rgba(186, 65, 42, 0.1);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+/* ── Results list ── */
+.results-panel {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ── Flight cards ── */
+.flight-list {
+  gap: 10px;
+}
+
+.flight-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  background: linear-gradient(160deg, rgba(255, 250, 242, 0.96), rgba(255, 244, 234, 0.84));
+  box-shadow: var(--shadow-soft);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.flight-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow);
+}
+
+.flight-route {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.flight-route > span:first-child {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.flight-duration {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(184, 92, 56, 0.1);
+  color: var(--terracotta-dark);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.flight-times {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.flight-airline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.flight-airline::before {
+  content: "✈";
+  color: var(--blue);
+  font-size: 0.88rem;
+}
+
+.flight-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(77, 53, 37, 0.08);
+}
+
+.flight-price {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--terracotta-dark);
+  letter-spacing: 0.01em;
+}
+
+.book-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: #fffaf2;
+  background: linear-gradient(135deg, var(--terracotta), var(--terracotta-dark));
+  box-shadow: 0 8px 18px rgba(139, 63, 37, 0.22);
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.book-link:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 26px rgba(139, 63, 37, 0.28);
+}
+
+/* ── Price calendar ── */
+.calendar-panel {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  background: linear-gradient(160deg, rgba(255, 250, 242, 0.96), rgba(255, 244, 234, 0.84));
+  box-shadow: var(--shadow-soft);
+}
+
+.calendar-cheapest-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.calendar-cheapest-note strong {
+  color: var(--terracotta-dark);
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.12rem;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.calendar-cell {
+  display: grid;
+  gap: 2px;
+  padding: 7px 4px;
+  border: 1px solid rgba(77, 53, 37, 0.08);
+  border-radius: 10px;
+  text-align: center;
+  background: rgba(255, 250, 242, 0.7);
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.calendar-cell:hover {
+  transform: translateY(-1px);
+  border-color: rgba(184, 92, 56, 0.22);
+}
+
+.calendar-cell.cheapest {
+  border-color: var(--terracotta);
+  background: rgba(184, 92, 56, 0.1);
+}
+
+.cal-date {
+  font-size: 0.68rem;
+  font-weight: 900;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.calendar-cell.cheapest .cal-date {
+  color: var(--terracotta-dark);
+}
+
+.cal-price {
+  font-size: 0.6rem;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.2;
+  word-break: break-all;
+}
+
+/* ── Hotel cards ── */
+.hotel-list {
+  gap: 14px;
+}
+
+.hotel-card {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, rgba(255, 250, 242, 0.96), rgba(255, 244, 234, 0.84));
+  box-shadow: var(--shadow-soft);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.hotel-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow);
+}
+
+.hotel-card-main {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 0;
+}
+
+.hotel-photo-wrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  background: rgba(36, 27, 22, 0.08);
+  min-height: 160px;
+}
+
+.hotel-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
+.hotel-photo-placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  font-size: 2.4rem;
+  background: linear-gradient(135deg, rgba(214, 169, 72, 0.16), rgba(184, 92, 56, 0.12));
+  color: var(--terracotta);
+}
+
+.hotel-info {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  align-content: start;
+}
+
+.hotel-name-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hotel-name {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.hotel-stars {
+  color: var(--gold);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.hotel-review {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.review-score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: #fffaf2;
+  background: var(--blue);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.review-word {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.review-count {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.hotel-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.hotel-price {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--terracotta-dark);
+}
+
+.hotel-price-unit {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.hotel-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* ── Room list ── */
+.room-list {
+  margin: 0;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(77, 53, 37, 0.08);
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  background: rgba(255, 246, 235, 0.6);
+}
+
+.room-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid rgba(184, 92, 56, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 252, 246, 0.9);
+}
+
+.room-name {
+  font-weight: 800;
+  font-size: 0.88rem;
+  color: var(--ink);
+  flex: 1;
+}
+
+.room-price {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--terracotta-dark);
+  white-space: nowrap;
+}
+
+.room-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.room-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(111, 128, 102, 0.14);
+  color: var(--sage);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+/* ── Booking page decorative header ── */
+.booking-page-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(77, 53, 37, 0.1);
+}
+
+.booking-page-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  font-size: 1.4rem;
+  background: linear-gradient(135deg, rgba(214, 169, 72, 0.22), rgba(184, 92, 56, 0.14));
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 8px 18px rgba(72, 45, 30, 0.1);
+}
+
+@media (max-width: 680px) {
+  .hotel-card-main {
+    grid-template-columns: 1fr;
+  }
+
+  .hotel-photo-wrap {
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    min-height: 180px;
+  }
+
+  .calendar-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .booking-search-actions {
+    flex-direction: column;
+  }
 }
 
 .day-tabs {
