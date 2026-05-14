@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { TripHotelSection } from "../components/trip/TripHotelSection";
 import { Link, useParams } from "react-router-dom";
 import { EmptyState } from "../components/common/EmptyState";
 import { LoadingState } from "../components/common/LoadingState";
@@ -268,6 +269,7 @@ export function TripPlanPage() {
         />
       ) : null}
       {trip ? (
+        <>
         <div className="trip-layout">
           <section className="trip-main">
             <div className="trip-title-card">
@@ -356,6 +358,8 @@ export function TripPlanPage() {
             <GoogleMapViewer places={mapPlaces} />
           </aside>
         </div>
+        <TripHotelSection trip={trip} />
+        </>
       ) : null}
     </PageContainer>
   );

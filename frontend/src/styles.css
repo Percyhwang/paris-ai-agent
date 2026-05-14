@@ -1589,6 +1589,35 @@ textarea {
   gap: 18px;
 }
 
+/* ── 여행 플랜 내 숙소 추천 섹션 ── */
+.trip-hotel-section {
+  display: grid;
+  gap: 16px;
+  margin-top: 32px;
+  padding-top: 28px;
+  border-top: 2px solid rgba(77, 53, 37, 0.1);
+}
+
+.trip-hotel-header {
+  display: grid;
+  gap: 4px;
+}
+
+.trip-hotel-title {
+  margin: 0;
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.trip-hotel-desc {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .modal-content .detail-grid {
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
   gap: 20px;
