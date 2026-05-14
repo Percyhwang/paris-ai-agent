@@ -260,6 +260,8 @@ def _localize_trip_response(trip: dict, language: str) -> dict:
             localized_item["title"] = _localize_text(localized_item.get("title"))
             localized_item["description"] = _localize_text(localized_item.get("description"))
             localized_item["estimated_duration"] = _localize_text(localized_item.get("estimated_duration"))
+            localized_item["role_label"] = _localize_text(localized_item.get("role_label"))
+            localized_item["reasoning"] = _localize_text(localized_item.get("reasoning"))
             if isinstance(localized_item.get("place"), dict):
                 place = dict(localized_item["place"])
                 place["name"] = _localize_text(place.get("name"))

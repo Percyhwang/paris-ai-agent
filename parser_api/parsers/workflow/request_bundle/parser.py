@@ -1,6 +1,7 @@
 from typing import Optional
 
 from parser_api.intents import Intent
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.request_bundle.detection import detect_requested_actions
 from parser_api.parsers.workflow.request_bundle.utils import infer_action_dependencies
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
@@ -24,6 +25,7 @@ class RequestBundleParser:
             )
             for index, action in enumerate(actions)
         ]
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if not payload.actions:

@@ -5,6 +5,7 @@ from parser_api.intents import Intent
 from parser_api.parsers.common.constants import TRANSIT_MODE_TOKENS, WALK_MODE_TOKENS
 from parser_api.parsers.modify_plan.constants import KNOWN_PLACES
 from parser_api.parsers.modify_plan.inference import _extract_target_day
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import (
     _apply_location,
     _location_from_token,
@@ -100,6 +101,7 @@ class OptimizeRouteParser:
         payload.start_location, payload.end_location = _extract_start_end_locations(message)
         payload.travel_mode = _infer_travel_mode(compact)
         payload.optimize = _infer_optimize_goal(compact)
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if not payload.route_points and payload.trip_id is None:

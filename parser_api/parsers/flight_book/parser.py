@@ -7,6 +7,7 @@ from parser_api.parsers.flight_search.parser import (
     _infer_cabin_class,
     _infer_trip_type,
 )
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import Clarify, FlightBookPayload
 
@@ -48,6 +49,8 @@ class FlightBookParser:
         payload.party = shared.party
         payload.max_price, payload.currency = _extract_max_price(message)
         payload.offer_ref = _extract_offer_ref(message, context)
+        payload.requires_confirmation = True
+        payload = augment_payload_with_llm(payload, message, context)
         payload.requires_confirmation = True
 
         missing_fields: list[str] = []

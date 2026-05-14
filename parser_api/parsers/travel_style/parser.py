@@ -1,6 +1,7 @@
 from typing import Optional
 
 from parser_api.intents import Intent
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.user_profile.helpers import build_profile_preferences
 from parser_api.schemas import Clarify, TravelStylePayload
 
@@ -59,6 +60,7 @@ class TravelStyleParser:
         payload.budget_mode = profile.budget_mode
         payload.travel_mode = profile.travel_mode
         payload.venue_focus = _build_venue_focus(profile)
+        payload = augment_payload_with_llm(payload, message, context)
 
         has_signal = any(
             value

@@ -2,6 +2,7 @@ import re
 from typing import Optional
 
 from parser_api.intents import Intent
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import Clarify, ManageTripPayload
 
@@ -93,6 +94,7 @@ class ManageTripParser:
 
         if payload.trip_id is None and shared.trip_id is not None:
             payload.trip_id = shared.trip_id
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if payload.operation in {"retrieve", "delete"} and payload.scope == "current" and payload.trip_id is None:

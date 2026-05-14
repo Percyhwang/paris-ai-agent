@@ -9,6 +9,7 @@ from parser_api.parsers.hotel_search.parser import (
     _extract_star_rating,
     _infer_nights,
 )
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import Clarify, HotelBookPayload
 
@@ -53,6 +54,8 @@ class HotelBookParser:
         payload.star_rating = _extract_star_rating(message)
         payload.max_price_per_night, payload.currency = _extract_max_price_per_night(message)
         payload.property_ref = _extract_property_ref(message, context)
+        payload.requires_confirmation = True
+        payload = augment_payload_with_llm(payload, message, context)
         payload.requires_confirmation = True
 
         missing_fields: list[str] = []

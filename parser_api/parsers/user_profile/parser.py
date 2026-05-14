@@ -1,6 +1,7 @@
 from typing import Optional
 
 from parser_api.intents import Intent
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.user_profile.helpers import build_profile_preferences
 from parser_api.schemas import Clarify, UserProfilePayload
 
@@ -39,6 +40,7 @@ class UserProfileParser:
         payload = UserProfilePayload()
         payload.operation = _infer_operation(compact)
         payload.profile = build_profile_preferences(message, context)
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if payload.operation == "update" and not _profile_has_signal(payload):

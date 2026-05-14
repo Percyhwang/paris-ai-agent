@@ -66,6 +66,10 @@ class RouteLeg(BaseModel):
     distance_meters: int | None = None
     duration_seconds: int | None = None
     duration_text: str
+    buffer_minutes: int | None = None
+    scheduled_duration_seconds: int | None = None
+    scheduled_duration_text: str | None = None
+    compact_summary: str | None = None
     steps: list[RouteStep] = Field(default_factory=list)
     transit_lines: list[str] = Field(default_factory=list)
     fallback: bool = False
@@ -75,10 +79,16 @@ class ItineraryItem(BaseModel):
     id: str | None = None
     time_slot: Literal["morning", "lunch", "afternoon", "evening"]
     start_time: str
+    end_time: str | None = None
     title: str
     place: ItineraryPlace
     description: str
     estimated_duration: str
+    duration_minutes: int | None = None
+    role_label: str | None = None
+    role_icon: str | None = None
+    reasoning: str | None = None
+    energy_level: int | None = Field(default=None, ge=1, le=5)
     route_to_next: RouteLeg | None = None
 
 
@@ -87,6 +97,7 @@ class ItineraryDay(BaseModel):
     day_number: int
     date: date | str | None = None
     title: str
+    theme: str | None = None
     items: list[ItineraryItem] = Field(default_factory=list)
     route_summary: str | None = None
 

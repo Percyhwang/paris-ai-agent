@@ -3,6 +3,7 @@ from typing import Optional
 
 from parser_api.intents import Intent
 from parser_api.parsers.hotel_search.parser import _extract_star_rating
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import BudgetComponents, Clarify, EstimateBudgetPayload
 
@@ -76,6 +77,7 @@ class EstimateBudgetParser:
         payload.budget = shared.budget
         payload.components = _infer_components(message)
         payload.hotel_star_rating = _extract_star_rating(message)
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if payload.destination.city is None:

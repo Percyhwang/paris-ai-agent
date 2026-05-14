@@ -7,6 +7,7 @@ from parser_api.parsers.create_plan.preferences import (
     _extract_themes,
 )
 from parser_api.parsers.hotel_search.parser import _extract_area_and_landmark
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import Clarify, RecommendVenuePayload
 
@@ -66,6 +67,7 @@ class RecommendVenueParser:
         payload.themes = _extract_recommend_themes(message)
         payload.must_include, payload.must_avoid = _extract_place_preferences(message)
         payload.count = _extract_count(message)
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if payload.destination.city is None:

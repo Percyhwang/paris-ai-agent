@@ -7,6 +7,7 @@ from parser_api.parsers.hotel_search.parser import (
     _extract_rooms,
     _extract_star_rating,
 )
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import BookingChangeRequest, Clarify, ManageBookingPayload
 
@@ -93,6 +94,8 @@ class ManageBookingParser:
         payload.booking_id = _extract_booking_id(message, context)
         payload.trip_id = shared.trip_id
         payload.change_request = _build_change_request(message, context)
+        payload.requires_confirmation = payload.operation == "cancel"
+        payload = augment_payload_with_llm(payload, message, context)
         payload.requires_confirmation = payload.operation == "cancel"
 
         missing_fields: list[str] = []

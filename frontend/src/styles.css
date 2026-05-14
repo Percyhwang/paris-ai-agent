@@ -2632,7 +2632,27 @@ textarea {
 .timeline {
   position: relative;
   display: grid;
+  gap: 20px;
+}
+
+.timeline-section {
+  display: grid;
   gap: 12px;
+}
+
+.timeline-section-header {
+  display: inline-flex;
+  width: max-content;
+  min-height: 30px;
+  margin: 0;
+  align-items: center;
+  border: 1px solid rgba(184, 92, 56, 0.16);
+  border-radius: 999px;
+  padding: 0 12px;
+  color: var(--terracotta-dark);
+  background: rgba(255, 250, 242, 0.9);
+  font-size: 0.82rem;
+  font-weight: 900;
 }
 
 .timeline-card {
@@ -2695,6 +2715,96 @@ textarea {
   padding: 14px;
   background: rgba(255, 250, 242, 0.86);
   box-shadow: 0 12px 30px rgba(72, 45, 30, 0.1);
+}
+
+.timeline-role-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.timeline-role-badge,
+.timeline-duration {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  min-height: 26px;
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.timeline-role-badge {
+  gap: 6px;
+  color: var(--terracotta-dark);
+  background: rgba(184, 92, 56, 0.11);
+}
+
+.timeline-duration {
+  color: var(--blue);
+  background: rgba(66, 93, 123, 0.1);
+}
+
+.timeline-reasoning {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.timeline-description {
+  margin-top: -2px;
+  font-size: 0.88rem;
+}
+
+.route-transition {
+  margin: -6px 0 2px 100px;
+}
+
+.route-transition summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid rgba(66, 93, 123, 0.12);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--muted);
+  background: rgba(244, 248, 249, 0.72);
+  font-size: 0.78rem;
+  font-weight: 900;
+  cursor: pointer;
+  list-style: none;
+}
+
+.route-transition summary::-webkit-details-marker {
+  display: none;
+}
+
+.route-transition-icon {
+  color: var(--blue);
+}
+
+.route-transition-main {
+  color: var(--ink);
+}
+
+.route-transition-buffer {
+  color: var(--blue);
+}
+
+.route-transition-panel {
+  display: grid;
+  gap: 8px;
+  max-width: 720px;
+  margin-top: 8px;
+  border: 1px solid rgba(66, 93, 123, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(244, 248, 249, 0.82);
 }
 
 .route-leg-card {
@@ -3303,7 +3413,6 @@ textarea {
 
   .form-row,
   .timeline-card,
-  .route-leg-card,
   .place-grid,
   .weather-grid,
   .search-workspace {
@@ -3342,6 +3451,10 @@ textarea {
 
   .timeline-dot {
     display: none;
+  }
+
+  .route-transition {
+    margin-left: 0;
   }
 
   .route-leg-time {

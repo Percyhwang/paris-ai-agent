@@ -2,6 +2,7 @@ import re
 from typing import Optional
 
 from parser_api.intents import Intent
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.modify_plan.constants import KNOWN_PLACES
 from parser_api.parsers.modify_plan.inference import _extract_target_day
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
@@ -68,6 +69,7 @@ class TripDiaryParser:
         payload.include_cost = any(token in compact for token in ("비용", "예산", "경비", "지출"))
         payload.highlights = _extract_highlights(message)
         payload.notes = _extract_notes(message)
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if (

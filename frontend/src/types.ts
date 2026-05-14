@@ -96,6 +96,10 @@ export type RouteLeg = {
   distance_meters?: number | null;
   duration_seconds?: number | null;
   duration_text: string;
+  buffer_minutes?: number | null;
+  scheduled_duration_seconds?: number | null;
+  scheduled_duration_text?: string | null;
+  compact_summary?: string | null;
   steps: RouteStep[];
   transit_lines: string[];
   fallback: boolean;
@@ -105,10 +109,16 @@ export type ItineraryItem = {
   id?: string | null;
   time_slot: "morning" | "lunch" | "afternoon" | "evening";
   start_time: string;
+  end_time?: string | null;
   title: string;
   place: ItineraryPlace;
   description: string;
   estimated_duration: string;
+  duration_minutes?: number | null;
+  role_label?: string | null;
+  role_icon?: string | null;
+  reasoning?: string | null;
+  energy_level?: number | null;
   route_to_next?: RouteLeg | null;
 };
 
@@ -117,6 +127,7 @@ export type ItineraryDay = {
   day_number: number;
   date?: string | null;
   title: string;
+  theme?: string | null;
   items: ItineraryItem[];
   route_summary?: string | null;
 };

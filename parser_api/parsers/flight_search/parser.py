@@ -2,6 +2,7 @@ import re
 from typing import Optional
 
 from parser_api.intents import Intent
+from parser_api.parsers.llm import augment_payload_with_llm
 from parser_api.parsers.workflow.shared_context.parser import parse_shared_context
 from parser_api.schemas import Clarify, FlightSearchPayload
 
@@ -75,6 +76,7 @@ class FlightSearchParser:
         payload.direct_only = "직항" in compact
         payload.party = shared.party
         payload.max_price, payload.currency = _extract_max_price(message)
+        payload = augment_payload_with_llm(payload, message, context)
 
         missing_fields: list[str] = []
         if payload.origin.airport_code is None and payload.origin.city is None:
