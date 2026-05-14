@@ -1,10 +1,28 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import get_current_user
 from app.core.responses import api_ok
 from app.services.booking_service import get_room_list, search_destination, search_hotels
+from app.services.hotel_recommend_service import recommend_hotels
 
 router = APIRouter()
+
+
+@router.post("/recommend")
+def recommend_hotels_route(
+    body: dict = Body(...),
+    _: dict = Depends(get_current_user),
+) -> dict:
+    query = body.get("query", "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query 필드가 필요합니다.")
+    try:
+        result = recommend_hotels(query)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return api_ok(result)
 
 
 @router.get("/search")

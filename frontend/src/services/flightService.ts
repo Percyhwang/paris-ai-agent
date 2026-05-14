@@ -1,5 +1,24 @@
 import { apiRequest } from "./apiClient";
 
+export interface FlightRecommendation extends Flight {
+  rank: number;
+  reason: string;
+}
+
+export interface RecommendFlightsResult {
+  flights: FlightRecommendation[];
+  parsedParams: {
+    origin: string;
+    destination: string;
+    departure_date: string;
+    return_date: string | null;
+    adults: number;
+    currency: string;
+    preferences: string[];
+  };
+  count: number;
+}
+
 export interface Flight {
   id: string;
   price: number;
@@ -18,6 +37,17 @@ export interface Flight {
   returnArrival?: string;
   returnDurationHours?: number;
   returnStops?: number;
+  segments?: FlightSegment[];
+  returnSegments?: FlightSegment[];
+}
+
+export interface FlightSegment {
+  from: string;
+  fromCity: string;
+  to: string;
+  toCity: string;
+  departure: string;
+  arrival: string;
 }
 
 export interface PriceCalendar {
@@ -26,6 +56,14 @@ export interface PriceCalendar {
   days: { date: string; price: number }[];
   cheapestDate: string | null;
   cheapestPrice: number | null;
+}
+
+export async function recommendFlights(query: string): Promise<RecommendFlightsResult> {
+  return apiRequest("/flights/recommend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
 }
 
 export async function searchFlights(params: {

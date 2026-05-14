@@ -1,103 +1,117 @@
 import { FormEvent, useState } from "react";
 import { PageContainer } from "../components/common/PageContainer";
 import { useLanguage } from "../store/LanguageContext";
-import { fetchPriceCalendar, searchFlights, type Flight, type PriceCalendar } from "../services/flightService";
+import { recommendFlights, type FlightRecommendation, type FlightSegment } from "../services/flightService";
 
 const COPY = {
   ko: {
     eyebrow: "Flights",
-    title: "항공권 검색",
-    description: "Kiwi.com API로 실시간 항공권을 조회합니다.",
-    from: "출발지",
-    to: "도착지",
-    depart: "출발일",
-    returnDate: "귀국일 (편도면 비워두세요)",
-    passengers: "탑승객 수",
-    search: "항공권 검색",
-    calendarBtn: "월별 최저가 보기",
-    loading: "검색 중...",
-    noResults: "검색 결과가 없습니다.",
+    title: "항공권 추천",
+    description: "여행 계획을 자연어로 말씀해 주세요. AI가 최적의 항공권을 추천해 드립니다.",
+    placeholder:
+      "예: 7월 10일 서울에서 파리로 출발해서 7월 20일에 돌아올거야. 직항이면 좋겠고 성인 2명이야.",
+    search: "AI 추천받기",
+    loading: "AI가 분석 중입니다...",
+    noResults: "조건에 맞는 항공권을 찾지 못했습니다. 다른 조건으로 다시 시도해 보세요.",
+    parsedTitle: "AI가 이해한 조건",
+    outbound: "가는 편",
+    inbound: "오는 편",
+    oneway: "편도",
     stops: (n: number) => (n === 0 ? "직항" : `경유 ${n}회`),
-    book: "예약하기 →",
-    cheapest: "이 달 최저가",
-    direct: "직항",
+    book: "예약하기",
+    rank: (n: number) => `추천 ${n}위`,
+    whyTitle: "AI 추천 이유",
+    departure: "출발",
+    returnDate: "귀국",
+    adults: "인원",
+    total: "총 가격",
   },
   en: {
     eyebrow: "Flights",
-    title: "Flight Search",
-    description: "Search real-time flights via Kiwi.com API.",
-    from: "From",
-    to: "To",
-    depart: "Depart",
-    returnDate: "Return (leave blank for one-way)",
-    passengers: "Passengers",
-    search: "Search Flights",
-    calendarBtn: "Monthly prices",
-    loading: "Searching...",
-    noResults: "No results found.",
+    title: "Flight Recommendation",
+    description: "Describe your travel plans in natural language. AI will find the best flights.",
+    placeholder:
+      "e.g. I'm flying from Seoul to Paris on July 10th and returning July 20th. Prefer direct flights, 2 adults.",
+    search: "Get AI Recommendations",
+    loading: "AI is analyzing your request...",
+    noResults: "No flights matched your criteria. Try rephrasing your request.",
+    parsedTitle: "What AI understood",
+    outbound: "Outbound",
+    inbound: "Return",
+    oneway: "One-way",
     stops: (n: number) => (n === 0 ? "Direct" : `${n} stop${n > 1 ? "s" : ""}`),
-    book: "Book →",
-    cheapest: "Cheapest this month",
-    direct: "Direct",
+    book: "Book",
+    rank: (n: number) => `#${n} Pick`,
+    whyTitle: "Why AI recommends this",
+    departure: "Depart",
+    returnDate: "Return",
+    adults: "Passengers",
+    total: "Total price",
   },
 } as const;
 
-const fmt = (price: number | null) =>
+const fmtPrice = (price: number | null) =>
   price == null ? "—" : price.toLocaleString("ko-KR") + "원";
+
+function fmtDateTime(raw: string): string {
+  const m = raw.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return raw;
+  const [, , month, day, hour, min] = m;
+  return `${Number(month)}/${Number(day)} ${hour}:${min}`;
+}
+
+function SegmentList({ segments }: { segments: FlightSegment[] }) {
+  return (
+    <div className="flight-segments">
+      {segments.map((seg, i) => (
+        <div key={i} className="flight-segment-row">
+          <div className="flight-segment-cities">
+            <span className="flight-segment-city">{seg.fromCity ?? seg.from}</span>
+            <span className="flight-segment-arrow">→</span>
+            <span className="flight-segment-city">{seg.toCity ?? seg.to}</span>
+          </div>
+          <span className="flight-segment-times">
+            {fmtDateTime(seg.departure)} → {fmtDateTime(seg.arrival)}
+          </span>
+          {i < segments.length - 1 && (
+            <div className="flight-layover-indicator">
+              <span className="flight-layover-dot" />
+              <span className="flight-layover-label">경유 · {seg.toCity ?? seg.to}</span>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function FlightSearchPage() {
   const { language } = useLanguage();
   const copy = COPY[language];
 
-  const [origin, setOrigin] = useState("서울");
-  const [destination, setDestination] = useState("Paris");
-  const [departureDate, setDepartureDate] = useState("");
-  const [returnDate, setReturnDate] = useState("");
-  const [adults, setAdults] = useState(1);
-
-  const [flights, setFlights] = useState<Flight[]>([]);
-  const [calendar, setCalendar] = useState<PriceCalendar | null>(null);
+  const [query, setQuery] = useState("");
+  const [flights, setFlights] = useState<FlightRecommendation[]>([]);
+  const [parsedParams, setParsedParams] = useState<{
+    origin?: string; destination?: string; departure_date?: string;
+    return_date?: string | null; adults?: number; preferences?: string[];
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSearch(event: FormEvent) {
-    event.preventDefault();
-    setLoading(true);
-    setError(null);
-    setCalendar(null);
-    try {
-      const result = await searchFlights({
-        origin,
-        destination,
-        departure_date: departureDate,
-        return_date: returnDate || undefined,
-        adults,
-      });
-      setFlights(result.flights);
-      if (result.flights.length === 0) setError(copy.noResults);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "검색에 실패했습니다.");
-      setFlights([]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleCalendar() {
-    if (!departureDate) return;
+  async function handleSearch(e: FormEvent) {
+    e.preventDefault();
+    if (!query.trim()) return;
     setLoading(true);
     setError(null);
     setFlights([]);
+    setParsedParams(null);
     try {
-      const result = await fetchPriceCalendar({
-        origin,
-        destination,
-        month: departureDate.slice(0, 7),
-        adults,
-      });
-      setCalendar(result);
+      const result = await recommendFlights(query);
+      setFlights(result.flights);
+      setParsedParams(result.parsedParams);
+      if (result.flights.length === 0) setError(copy.noResults);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "캘린더 조회에 실패했습니다.");
+      setError(err instanceof Error ? err.message : "추천 요청에 실패했습니다.");
     } finally {
       setLoading(false);
     }
@@ -107,65 +121,41 @@ export function FlightSearchPage() {
     <PageContainer eyebrow={copy.eyebrow} title={copy.title} description={copy.description} theme="reservation">
       <div className="search-workspace">
 
-        {/* ── 검색 폼 ── */}
-        <form className="booking-search-panel stacked-form" onSubmit={handleSearch}>
-          <div className="form-row">
-            <label>
-              {copy.from}
-              <input value={origin} onChange={(e) => setOrigin(e.target.value)} placeholder="서울" required />
-            </label>
-            <label>
-              {copy.to}
-              <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Paris" required />
-            </label>
-          </div>
-          <div className="form-row">
-            <label>
-              {copy.depart}
-              <input type="date" value={departureDate} onChange={(e) => setDepartureDate(e.target.value)} required />
-            </label>
-            <label>
-              {copy.returnDate}
-              <input type="date" value={returnDate} onChange={(e) => setReturnDate(e.target.value)} />
-            </label>
-          </div>
-          <label style={{ maxWidth: 160 }}>
-            {copy.passengers}
-            <input type="number" min="1" max="9" value={adults} onChange={(e) => setAdults(Number(e.target.value))} />
-          </label>
+        {/* ── 자연어 입력 ── */}
+        <form className="nl-search-panel" onSubmit={handleSearch}>
+          <textarea
+            className="nl-search-input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={copy.placeholder}
+            rows={3}
+            required
+          />
           <div className="booking-search-actions">
             <button type="submit" className="primary-button" disabled={loading}>
               {loading ? copy.loading : copy.search}
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={handleCalendar}
-              disabled={loading || !departureDate}
-            >
-              {copy.calendarBtn}
             </button>
           </div>
         </form>
 
         {error && <p className="error-message">{error}</p>}
 
-        {/* ── 최저가 캘린더 ── */}
-        {calendar && (
-          <div className="calendar-panel">
-            <p className="calendar-cheapest-note">
-              ✦&nbsp;{copy.cheapest}:&nbsp;
-              <strong>{calendar.cheapestDate}</strong>&nbsp;—&nbsp;{fmt(calendar.cheapestPrice)}
-            </p>
-            <div className="calendar-grid">
-              {calendar.days.map((d) => (
-                <div
-                  key={d.date}
-                  className={`calendar-cell${d.date === calendar.cheapestDate ? " cheapest" : ""}`}
-                >
-                  <span className="cal-date">{d.date.slice(5)}</span>
-                  <span className="cal-price">{fmt(d.price)}</span>
-                </div>
+        {/* ── AI가 이해한 조건 요약 ── */}
+        {parsedParams && !loading && (
+          <div className="parsed-params-card">
+            <span className="parsed-params-title">{copy.parsedTitle}</span>
+            <div className="parsed-params-tags">
+              {parsedParams.departure_date && (
+                <span className="param-tag">{copy.departure}: {parsedParams.departure_date}</span>
+              )}
+              {parsedParams.return_date && (
+                <span className="param-tag">{copy.returnDate}: {parsedParams.return_date}</span>
+              )}
+              {parsedParams.adults != null && (
+                <span className="param-tag">{copy.adults}: {parsedParams.adults}명</span>
+              )}
+              {parsedParams.preferences?.map((p) => (
+                <span key={p} className="param-tag preference">{p}</span>
               ))}
             </div>
           </div>
@@ -176,27 +166,97 @@ export function FlightSearchPage() {
           <ul className="results-panel flight-list">
             {flights.map((f) => (
               <li key={f.id} className="flight-card">
-                <div className="flight-route">
-                  <span>{f.flyFromCity ?? f.flyFrom} → {f.flyToCity ?? f.flyTo}</span>
-                  <span className="flight-duration">{f.durationHours}h · {copy.stops(f.stops)}</span>
+
+                {/* 상단: 순위 + 항공사 */}
+                <div className="flight-card-header">
+                  <span className="ai-rank-badge">{copy.rank(f.rank)}</span>
+                  <span className="flight-airline-name">✈ {f.airlineNames.join(" · ")}</span>
                 </div>
-                <div className="flight-times">
-                  {f.departure} → {f.arrival}
+
+                {/* 구간 블록 */}
+                <div className="flight-legs">
+
+                  {/* 가는 편 */}
+                  <div className="flight-leg">
+                    <div className="flight-leg-top">
+                      <span className="flight-leg-label outbound">{copy.outbound}</span>
+                      <div className="flight-leg-badges">
+                        <span className="flight-badge">{f.durationHours}h</span>
+                        <span className="flight-badge">{copy.stops(f.stops)}</span>
+                      </div>
+                    </div>
+                    {f.segments ? (
+                      <SegmentList segments={f.segments} />
+                    ) : (
+                      <>
+                        <div className="flight-leg-route">
+                          <span className="flight-city">{f.flyFromCity ?? f.flyFrom}</span>
+                          <span className="flight-arrow">→</span>
+                          <span className="flight-city">{f.flyToCity ?? f.flyTo}</span>
+                        </div>
+                        <span className="flight-time-range">
+                          {fmtDateTime(f.departure)} → {fmtDateTime(f.arrival)}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* 오는 편 (왕복인 경우) */}
                   {f.returnDeparture && (
-                    <span className="flight-return">
-                      &nbsp;·&nbsp;귀국 {f.returnDeparture} → {f.returnArrival}
-                    </span>
+                    <>
+                      <div className="flight-leg-divider" />
+                      <div className="flight-leg">
+                        <div className="flight-leg-top">
+                          <span className="flight-leg-label inbound">{copy.inbound}</span>
+                          <div className="flight-leg-badges">
+                            {f.returnDurationHours != null && (
+                              <span className="flight-badge">{f.returnDurationHours}h</span>
+                            )}
+                            {f.returnStops != null && (
+                              <span className="flight-badge">{copy.stops(f.returnStops)}</span>
+                            )}
+                          </div>
+                        </div>
+                        {f.returnSegments ? (
+                          <SegmentList segments={f.returnSegments} />
+                        ) : (
+                          <>
+                            <div className="flight-leg-route">
+                              <span className="flight-city">{f.flyToCity ?? f.flyTo}</span>
+                              <span className="flight-arrow">→</span>
+                              <span className="flight-city">{f.flyFromCity ?? f.flyFrom}</span>
+                            </div>
+                            <span className="flight-time-range">
+                              {fmtDateTime(f.returnDeparture!)} → {fmtDateTime(f.returnArrival!)}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
-                <div className="flight-airline">{f.airlineNames.join(" · ")}</div>
+
+                {/* AI 추천 이유 */}
+                {f.reason && (
+                  <div className="ai-reason-box">
+                    <span className="ai-reason-label">{copy.whyTitle}</span>
+                    <p className="ai-reason-text">{f.reason}</p>
+                  </div>
+                )}
+
+                {/* 하단: 가격 + 예약 */}
                 <div className="flight-footer">
-                  <strong className="flight-price">{fmt(f.price)}</strong>
+                  <div className="flight-price-wrap">
+                    <span className="flight-price-label">{copy.total}</span>
+                    <span className="flight-price">{fmtPrice(f.price)}</span>
+                  </div>
                   {f.deepLink && (
                     <a href={f.deepLink} target="_blank" rel="noopener noreferrer" className="book-link">
-                      {copy.book}
+                      {copy.book} →
                     </a>
                   )}
                 </div>
+
               </li>
             ))}
           </ul>

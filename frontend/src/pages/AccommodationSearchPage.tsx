@@ -1,20 +1,24 @@
 import { FormEvent, useState } from "react";
 import { PageContainer } from "../components/common/PageContainer";
 import { useLanguage } from "../store/LanguageContext";
-import { fetchRooms, searchHotels, type Hotel, type Room } from "../services/hotelService";
+import {
+  fetchRooms,
+  recommendHotels,
+  type HotelRecommendation,
+  type Room,
+} from "../services/hotelService";
 
 const COPY = {
   ko: {
     eyebrow: "Stay",
-    title: "숙소 검색",
-    description: "Booking.com API로 실시간 숙소를 조회합니다.",
-    destination: "도시",
-    checkIn: "체크인",
-    checkOut: "체크아웃",
-    guests: "인원",
-    search: "숙소 검색",
-    loading: "검색 중...",
-    noResults: "검색 결과가 없습니다.",
+    title: "숙소 추천",
+    description: "원하는 조건을 자연어로 말씀해 주세요. AI가 최적의 숙소를 추천해 드립니다.",
+    placeholder:
+      "예: 7월 10일부터 15일까지 파리여행 갈건데 에펠탑 근처, 역세권, 조식포함 호텔 추천해줘. 성인 2명이야.",
+    search: "AI 추천받기",
+    loading: "AI가 분석 중입니다...",
+    noResults: "조건에 맞는 숙소를 찾지 못했습니다. 다른 조건으로 다시 시도해 보세요.",
+    parsedTitle: "AI가 이해한 조건",
     book: "Booking.com →",
     viewRooms: "객실 보기",
     hideRooms: "접기",
@@ -23,18 +27,23 @@ const COPY = {
     payLater: "나중에 결제",
     perNight: "/ 박",
     reviewsCount: (n: number) => `리뷰 ${n.toLocaleString()}개`,
+    rank: (n: number) => `추천 ${n}위`,
+    whyTitle: "AI 추천 이유",
+    checkin: "체크인",
+    checkout: "체크아웃",
+    adults: "인원",
+    preferences: "선호 조건",
   },
   en: {
     eyebrow: "Stay",
-    title: "Accommodation Search",
-    description: "Search real-time hotels via Booking.com API.",
-    destination: "City",
-    checkIn: "Check-in",
-    checkOut: "Check-out",
-    guests: "Guests",
-    search: "Search Hotels",
-    loading: "Searching...",
-    noResults: "No results found.",
+    title: "Hotel Recommendation",
+    description: "Describe what you're looking for in natural language. AI will find the best match.",
+    placeholder:
+      "e.g. I'm visiting Paris July 10–15, looking for a hotel near the Eiffel Tower, close to metro, with breakfast. Two adults.",
+    search: "Get AI Recommendations",
+    loading: "AI is analyzing your request...",
+    noResults: "No hotels matched your criteria. Try rephrasing your request.",
+    parsedTitle: "What AI understood",
     book: "Booking.com →",
     viewRooms: "View rooms",
     hideRooms: "Hide",
@@ -43,72 +52,74 @@ const COPY = {
     payLater: "Pay later",
     perNight: "/ night",
     reviewsCount: (n: number) => `${n.toLocaleString()} reviews`,
+    rank: (n: number) => `#${n} Pick`,
+    whyTitle: "Why AI recommends this",
+    checkin: "Check-in",
+    checkout: "Check-out",
+    adults: "Guests",
+    preferences: "Preferences",
   },
 } as const;
 
-const CURRENCY_SYMBOLS: Record<string, string> = {
-  EUR: "€",
-  USD: "$",
-  KRW: "₩",
-};
-
-function fmt(price: number | null, currency: string) {
+function fmt(price: number | null, _currency?: string) {
   if (price == null) return "—";
-  const symbol = CURRENCY_SYMBOLS[currency] ?? currency + " ";
-  if (currency === "KRW") return price.toLocaleString("ko-KR") + "원";
-  return symbol + price.toLocaleString("en-US");
+  return price.toLocaleString("ko-KR") + "원";
 }
 
 const stars = (n: number | null) => (n && n > 0 ? "★".repeat(Math.min(n, 5)) : null);
-
-const CURRENCIES = ["EUR", "USD", "KRW"];
 
 export function AccommodationSearchPage() {
   const { language } = useLanguage();
   const copy = COPY[language];
 
-  const [destination, setDestination] = useState("Paris");
-  const [checkin, setCheckin] = useState("");
-  const [checkout, setCheckout] = useState("");
-  const [adults, setAdults] = useState(2);
-  const [currency, setCurrency] = useState("EUR");
-
-  const [hotels, setHotels] = useState<Hotel[]>([]);
+  const [query, setQuery] = useState("");
+  const [hotels, setHotels] = useState<HotelRecommendation[]>([]);
+  const [parsedParams, setParsedParams] = useState<{
+    destination?: string; checkin?: string; checkout?: string;
+    adults?: number; currency?: string; preferences?: string[];
+  } | null>(null);
   const [expandedId, setExpandedId] = useState<string | number | null>(null);
   const [rooms, setRooms] = useState<Record<string, Room[]>>({});
   const [loading, setLoading] = useState(false);
   const [roomLoading, setRoomLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSearch(event: FormEvent) {
-    event.preventDefault();
+  const currency = parsedParams?.currency ?? "KRW";
+
+  async function handleSearch(e: FormEvent) {
+    e.preventDefault();
+    if (!query.trim()) return;
     setLoading(true);
     setError(null);
+    setHotels([]);
+    setParsedParams(null);
     setExpandedId(null);
     setRooms({});
     try {
-      const result = await searchHotels({ destination, checkin, checkout, adults, currency });
+      const result = await recommendHotels(query);
       setHotels(result.hotels);
+      setParsedParams(result.parsedParams);
       if (result.hotels.length === 0) setError(copy.noResults);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "검색에 실패했습니다.");
-      setHotels([]);
+      setError(err instanceof Error ? err.message : "추천 요청에 실패했습니다.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function toggleRooms(hotel: Hotel) {
+  async function toggleRooms(hotel: HotelRecommendation) {
     const key = String(hotel.hotelId);
-    if (expandedId === hotel.hotelId) {
-      setExpandedId(null);
-      return;
-    }
+    if (expandedId === hotel.hotelId) { setExpandedId(null); return; }
     setExpandedId(hotel.hotelId);
     if (rooms[key]) return;
     setRoomLoading(true);
     try {
-      const result = await fetchRooms(hotel.hotelId, { checkin, checkout, adults, currency });
+      const result = await fetchRooms(hotel.hotelId, {
+        checkin: parsedParams?.checkin ?? "",
+        checkout: parsedParams?.checkout ?? "",
+        adults: parsedParams?.adults,
+        currency,
+      });
       setRooms((prev) => ({ ...prev, [key]: result.rooms }));
     } catch {
       setRooms((prev) => ({ ...prev, [key]: [] }));
@@ -121,38 +132,16 @@ export function AccommodationSearchPage() {
     <PageContainer eyebrow={copy.eyebrow} title={copy.title} description={copy.description} theme="reservation">
       <div className="search-workspace">
 
-        {/* ── 검색 폼 ── */}
-        <form className="booking-search-panel stacked-form" onSubmit={handleSearch}>
-          <div className="form-row">
-            <label>
-              {copy.destination}
-              <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Paris" required />
-            </label>
-            <div className="form-row" style={{ gap: 6 }}>
-              <label style={{ minWidth: 0 }}>
-                {copy.guests}
-                <input type="number" min="1" max="9" value={adults} onChange={(e) => setAdults(Number(e.target.value))} />
-              </label>
-              <label style={{ minWidth: 0 }}>
-                통화
-                <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-                  {CURRENCIES.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          </div>
-          <div className="form-row">
-            <label>
-              {copy.checkIn}
-              <input type="date" value={checkin} onChange={(e) => setCheckin(e.target.value)} required />
-            </label>
-            <label>
-              {copy.checkOut}
-              <input type="date" value={checkout} onChange={(e) => setCheckout(e.target.value)} required />
-            </label>
-          </div>
+        {/* ── 자연어 입력 ── */}
+        <form className="nl-search-panel" onSubmit={handleSearch}>
+          <textarea
+            className="nl-search-input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={copy.placeholder}
+            rows={3}
+            required
+          />
           <div className="booking-search-actions">
             <button type="submit" className="primary-button" disabled={loading}>
               {loading ? copy.loading : copy.search}
@@ -161,6 +150,27 @@ export function AccommodationSearchPage() {
         </form>
 
         {error && <p className="error-message">{error}</p>}
+
+        {/* ── AI가 이해한 조건 요약 ── */}
+        {parsedParams && !loading && (
+          <div className="parsed-params-card">
+            <span className="parsed-params-title">{copy.parsedTitle}</span>
+            <div className="parsed-params-tags">
+              {parsedParams.checkin && (
+                <span className="param-tag">{copy.checkin}: {parsedParams.checkin}</span>
+              )}
+              {parsedParams.checkout && (
+                <span className="param-tag">{copy.checkout}: {parsedParams.checkout}</span>
+              )}
+              {parsedParams.adults != null && (
+                <span className="param-tag">{copy.adults}: {parsedParams.adults}명</span>
+              )}
+              {parsedParams.preferences?.map((p) => (
+                <span key={p} className="param-tag preference">{p}</span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── 호텔 결과 ── */}
         {hotels.length > 0 && (
@@ -173,8 +183,6 @@ export function AccommodationSearchPage() {
               return (
                 <li key={key} className="hotel-card">
                   <div className="hotel-card-main">
-
-                    {/* 사진 */}
                     <div className="hotel-photo-wrap">
                       {h.photoUrl ? (
                         <img src={h.photoUrl} alt={h.name ?? ""} className="hotel-photo" loading="lazy" />
@@ -183,9 +191,9 @@ export function AccommodationSearchPage() {
                       )}
                     </div>
 
-                    {/* 정보 */}
                     <div className="hotel-info">
                       <div className="hotel-name-row">
+                        <span className="ai-rank-badge">{copy.rank(h.rank)}</span>
                         <span className="hotel-name">{h.name}</span>
                         {stars(h.stars) && <span className="hotel-stars">{stars(h.stars)}</span>}
                       </div>
@@ -205,6 +213,13 @@ export function AccommodationSearchPage() {
                         <span className="hotel-price-unit">{copy.perNight}</span>
                       </div>
 
+                      {h.reason && (
+                        <div className="ai-reason-box">
+                          <span className="ai-reason-label">{copy.whyTitle}</span>
+                          <p className="ai-reason-text">{h.reason}</p>
+                        </div>
+                      )}
+
                       <div className="hotel-actions">
                         <button
                           type="button"
@@ -223,7 +238,6 @@ export function AccommodationSearchPage() {
                     </div>
                   </div>
 
-                  {/* 객실 목록 */}
                   {isExpanded && hotelRooms && hotelRooms.length > 0 && (
                     <ul className="room-list">
                       {hotelRooms.map((r) => (

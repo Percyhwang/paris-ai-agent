@@ -1,10 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import get_current_user
 from app.core.responses import api_ok
+from app.services.flight_recommend_service import recommend_flights
 from app.services.kiwi_service import city_to_iata, search_flights, search_price_calendar
 
 router = APIRouter()
+
+
+@router.post("/recommend")
+def recommend_flights_route(
+    body: dict = Body(...),
+    _: dict = Depends(get_current_user),
+) -> dict:
+    query = body.get("query", "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query 필드가 필요합니다.")
+    try:
+        result = recommend_flights(query)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return api_ok(result)
 
 
 @router.get("/search")

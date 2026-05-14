@@ -38,7 +38,7 @@ def _normalize_sector(sector: dict) -> dict:
     last = segments[-1]
     duration_sec = sector.get("duration_seconds", 0)
     carriers = sector.get("carriers", [])
-    return {
+    result = {
         "flyFrom": first["source"]["station"]["code"],
         "flyFromCity": first["source"]["station"]["city"],
         "flyTo": last["destination"]["station"]["code"],
@@ -50,6 +50,19 @@ def _normalize_sector(sector: dict) -> dict:
         "airlines": [c["code"] for c in carriers],
         "airlineNames": [c["name"] for c in carriers],
     }
+    if len(segments) > 1:
+        result["segments"] = [
+            {
+                "from": seg["source"]["station"]["code"],
+                "fromCity": seg["source"]["station"]["city"],
+                "to": seg["destination"]["station"]["code"],
+                "toCity": seg["destination"]["station"]["city"],
+                "departure": seg["source"]["local_time"],
+                "arrival": seg["destination"]["local_time"],
+            }
+            for seg in segments
+        ]
+    return result
 
 
 def _normalize_flight(itinerary: dict) -> dict:
@@ -67,6 +80,8 @@ def _normalize_flight(itinerary: dict) -> dict:
         result["returnArrival"] = inbound["arrival"]
         result["returnDurationHours"] = inbound["durationHours"]
         result["returnStops"] = inbound["stops"]
+        if "segments" in inbound:
+            result["returnSegments"] = inbound["segments"]
     return result
 
 

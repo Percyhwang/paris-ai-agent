@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     kiwi_rapidapi_host: str = "kiwi-com-flights-api.p.rapidapi.com"
     booking_rapidapi_host: str = "booking-com15.p.rapidapi.com"
 
+    openai_api_key: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

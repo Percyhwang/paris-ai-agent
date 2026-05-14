@@ -1,5 +1,24 @@
 import { apiRequest } from "./apiClient";
 
+export interface HotelRecommendation extends Hotel {
+  rank: number;
+  reason: string;
+  _distKm?: number;
+}
+
+export interface RecommendHotelsResult {
+  hotels: HotelRecommendation[];
+  parsedParams: {
+    destination: string;
+    checkin: string;
+    checkout: string;
+    adults: number;
+    currency: string;
+    preferences: string[];
+  };
+  count: number;
+}
+
 export interface Hotel {
   hotelId: string | number;
   name: string;
@@ -47,6 +66,14 @@ export async function searchHotels(params: {
   if (params.language) query.set("language", params.language);
   if (params.limit) query.set("limit", String(params.limit));
   return apiRequest(`/hotels/search?${query}`);
+}
+
+export async function recommendHotels(query: string): Promise<RecommendHotelsResult> {
+  return apiRequest("/hotels/recommend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
 }
 
 export async function fetchRooms(
