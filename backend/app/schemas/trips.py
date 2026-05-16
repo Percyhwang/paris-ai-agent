@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -67,9 +67,15 @@ class RouteLeg(BaseModel):
     duration_seconds: int | None = None
     duration_text: str
     buffer_minutes: int | None = None
+    rawDurationMinutes: int | None = None
+    bufferMinutes: int | None = None
+    totalTransferMinutes: int | None = None
     scheduled_duration_seconds: int | None = None
     scheduled_duration_text: str | None = None
     compact_summary: str | None = None
+    comfort_summary: str | None = None
+    effort_level: Literal["low", "medium", "high"] | None = None
+    restBufferReason: str | None = None
     steps: list[RouteStep] = Field(default_factory=list)
     transit_lines: list[str] = Field(default_factory=list)
     fallback: bool = False
@@ -80,6 +86,7 @@ class ItineraryItem(BaseModel):
     time_slot: Literal["morning", "lunch", "afternoon", "evening"]
     start_time: str
     end_time: str | None = None
+    itemKind: Literal["stop", "gap"] | None = None
     title: str
     place: ItineraryPlace
     description: str
@@ -88,6 +95,15 @@ class ItineraryItem(BaseModel):
     role_label: str | None = None
     role_icon: str | None = None
     reasoning: str | None = None
+    slotPurpose: str | None = None
+    userPreferenceReason: str | None = None
+    timeReason: str | None = None
+    restBufferReason: str | None = None
+    isNightViewSpot: bool | None = None
+    expectedExperience: str | None = None
+    editableReason: str | None = None
+    gapReason: str | None = None
+    nearbyMealNeeded: bool | None = None
     energy_level: int | None = Field(default=None, ge=1, le=5)
     route_to_next: RouteLeg | None = None
 
@@ -98,6 +114,9 @@ class ItineraryDay(BaseModel):
     date: date | str | None = None
     title: str
     theme: str | None = None
+    dayTheme: str | None = None
+    daySummary: str | None = None
+    routeSummary: str | None = None
     items: list[ItineraryItem] = Field(default_factory=list)
     route_summary: str | None = None
 
@@ -116,6 +135,8 @@ class TripResponse(BaseModel):
     total_days: int
     style_tags: list[str] = Field(default_factory=list)
     status: str = "draft"
+    planning_brief: dict[str, Any] | None = None
+    constraint_validation: dict[str, Any] | None = None
     itinerary_days: list[ItineraryDay] = Field(default_factory=list)
     route_summary: str | None = None
     created_at: datetime | str

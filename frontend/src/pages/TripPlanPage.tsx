@@ -224,7 +224,16 @@ export function TripPlanPage() {
   }
 
   const selectedDay = trip?.itinerary_days[activeDay];
-  const mapPlaces = selectedDay?.items.map((item) => ({ name: item.place.name, coordinates: item.place.coordinates })) ?? [];
+  const mapPlaces =
+    selectedDay?.items
+      .filter(
+        (item) =>
+          item.itemKind !== "gap" &&
+          !item.nearbyMealNeeded &&
+          item.place.category !== "meal_placeholder" &&
+          item.place.coordinates,
+      )
+      .map((item) => ({ name: item.place.name, coordinates: item.place.coordinates })) ?? [];
 
   return (
     <PageContainer
@@ -343,10 +352,10 @@ export function TripPlanPage() {
             {selectedDay ? (
               <>
                 <div className="section-heading">
-                  <h2>{selectedDay.title}</h2>
-                  <p>
-                    {formatDate(selectedDay.date, language)} · {selectedDay.route_summary ?? copy.routeFallback}
-                  </p>
+                  <h2>{selectedDay.dayTheme ?? selectedDay.title}</h2>
+                  <p>{formatDate(selectedDay.date, language)}</p>
+                  {selectedDay.daySummary ? <div className="day-summary-note">{selectedDay.daySummary}</div> : null}
+                  <div className="day-route-note">{selectedDay.routeSummary ?? selectedDay.route_summary ?? copy.routeFallback}</div>
                 </div>
                 <Timeline day={selectedDay} />
               </>

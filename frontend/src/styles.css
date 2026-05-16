@@ -2567,6 +2567,28 @@ textarea {
   line-height: 1.58;
 }
 
+.day-summary-note,
+.day-route-note {
+  border-radius: 16px;
+  padding: 11px 13px;
+}
+
+.day-summary-note {
+  color: var(--ink);
+  background: rgba(255, 250, 242, 0.86);
+  border: 1px solid rgba(184, 92, 56, 0.12);
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.day-route-note {
+  color: var(--muted);
+  background: rgba(66, 93, 123, 0.07);
+  border: 1px solid rgba(66, 93, 123, 0.12);
+  font-size: 0.84rem;
+  line-height: 1.58;
+}
+
 .trip-title-header,
 .trip-actions,
 .trip-edit-actions {
@@ -2717,12 +2739,30 @@ textarea {
   box-shadow: 0 12px 30px rgba(72, 45, 30, 0.1);
 }
 
+.timeline-card-gap .timeline-body {
+  border-style: dashed;
+  background: rgba(244, 248, 249, 0.9);
+  box-shadow: none;
+}
+
+.timeline-card-gap .timeline-dot::before {
+  background: var(--blue);
+  box-shadow: 0 0 0 1px rgba(66, 93, 123, 0.3);
+}
+
 .timeline-role-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: space-between;
+}
+
+.timeline-role-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
 }
 
 .timeline-role-badge,
@@ -2748,14 +2788,58 @@ textarea {
   background: rgba(66, 93, 123, 0.1);
 }
 
+.timeline-night-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 9px;
+  color: #fff7ef;
+  background: linear-gradient(135deg, var(--navy), var(--blue));
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.timeline-slot-purpose {
+  margin: 0;
+  color: var(--terracotta-dark);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
 .timeline-reasoning {
+  margin: 0;
   color: var(--ink);
   font-weight: 700;
 }
 
+.timeline-time-reason,
 .timeline-description {
-  margin-top: -2px;
+  margin: 0;
   font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.timeline-experience,
+.timeline-editable-note {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  border-left: 2px solid rgba(184, 92, 56, 0.18);
+  padding-left: 10px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.timeline-experience strong,
+.timeline-editable-note strong {
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .route-transition {
@@ -2790,10 +2874,12 @@ textarea {
 
 .route-transition-main {
   color: var(--ink);
+  font-weight: 900;
 }
 
 .route-transition-buffer {
   color: var(--blue);
+  white-space: nowrap;
 }
 
 .route-transition-panel {
@@ -2805,6 +2891,31 @@ textarea {
   border-radius: 12px;
   padding: 10px 12px;
   background: rgba(244, 248, 249, 0.82);
+}
+
+.route-transition-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.route-transition-note-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.route-transition-note-list span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  color: var(--ink);
+  background: rgba(66, 93, 123, 0.08);
+  font-size: 0.72rem;
+  font-weight: 800;
 }
 
 .route-leg-card {

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from parser_api.executors.base import ExecutionRequest, ExecutionResult
 from parser_api.intents import Intent
+from parser_api.services.planning_brief_service import build_unified_planning_brief
 from parser_api.services.trip_store import (
     save_create_plan_trip,
     save_modify_plan_trip,
@@ -23,7 +24,11 @@ class CreatePlanExecutor:
     intent = Intent.CREATE_PLAN
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        trip_id, trip_state = save_create_plan_trip(request.parsed_payload.model_dump())
+        planning_brief = build_unified_planning_brief(self.intent, request.parsed_payload, request.context)
+        trip_id, trip_state = save_create_plan_trip(
+            request.parsed_payload.model_dump(),
+            extra_state={"planning_brief": planning_brief} if planning_brief else None,
+        )
         return ExecutionResult(
             trip_id=trip_id,
             data=_attach_stub_meta(trip_state, self.intent, "create_plan_executor"),
@@ -34,7 +39,11 @@ class ModifyPlanExecutor:
     intent = Intent.MODIFY_PLAN
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        trip_id, trip_state = save_modify_plan_trip(request.parsed_payload.model_dump())
+        planning_brief = build_unified_planning_brief(self.intent, request.parsed_payload, request.context)
+        trip_id, trip_state = save_modify_plan_trip(
+            request.parsed_payload.model_dump(),
+            extra_state={"planning_brief": planning_brief} if planning_brief else None,
+        )
         return ExecutionResult(
             trip_id=trip_id,
             data=_attach_stub_meta(trip_state, self.intent, "modify_plan_executor"),

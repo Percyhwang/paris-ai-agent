@@ -57,6 +57,48 @@ function fmt(price: number | null) {
 
 const stars = (n: number | null) => (n && n > 0 ? "★".repeat(Math.min(n, 5)) : null);
 
+const CORE_STAY_EXCLUDED_CATEGORIES = new Set([
+  "free_time",
+  "rest",
+  "buffer",
+  "meal_placeholder",
+]);
+
+const MEAL_CATEGORIES = new Set([
+  "restaurant",
+  "cafe",
+  "bakery",
+  "bistro",
+  "brasserie",
+  "wine_bar",
+  "bar",
+]);
+
+function buildStayPlaceList(trip: Trip) {
+  const seen = new Set<string>();
+  const corePlaces: string[] = [];
+  const fallbackPlaces: string[] = [];
+
+  for (const day of trip.itinerary_days) {
+    for (const item of day.items) {
+      const category = item.place.category?.toLowerCase() ?? "";
+      const name = item.place.name?.trim();
+      if (!name) continue;
+      if (item.itemKind === "gap" || item.nearbyMealNeeded) continue;
+      if (CORE_STAY_EXCLUDED_CATEGORIES.has(category)) continue;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      if (!MEAL_CATEGORIES.has(category)) {
+        corePlaces.push(name);
+      } else {
+        fallbackPlaces.push(name);
+      }
+    }
+  }
+
+  return [...corePlaces, ...fallbackPlaces].slice(0, 4);
+}
+
 function buildQuery(trip: Trip): string {
   const parts: string[] = [];
 
@@ -64,10 +106,7 @@ function buildQuery(trip: Trip): string {
   if (trip.end_date) parts.push(`체크아웃 ${trip.end_date}`);
   parts.push("파리 호텔");
 
-  const places = trip.itinerary_days
-    .flatMap((d) => d.items.map((i) => i.place.name))
-    .filter(Boolean)
-    .slice(0, 4);
+  const places = buildStayPlaceList(trip);
   if (places.length) parts.push(`방문 예정: ${places.join(", ")}`);
 
   if (trip.style_tags.length) parts.push(`여행 스타일: ${trip.style_tags.join(", ")}`);

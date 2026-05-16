@@ -628,7 +628,7 @@ def _build_photo_proxy_url(place: dict[str, Any], api_base_url: str) -> str:
         return DEFAULT_PLACE_IMAGE
 
     encoded_name = quote(photo_name, safe="")
-    return f"{api_base_url}/api/places/photo?name={encoded_name}"
+    return f"/api/places/photo?name={encoded_name}"
 
 
 def _build_short_description(

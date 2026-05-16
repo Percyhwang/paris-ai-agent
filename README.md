@@ -43,6 +43,17 @@ cp .env.example .env
 docker compose -p paris-ai-agent up -d mongo
 ```
 
+도커로 전체 스택을 실행하려면:
+
+```bash
+docker compose up --build -d
+```
+
+기본 주소:
+
+- Frontend: `http://localhost:4173`
+- Backend health: `http://localhost:8010/health`
+
 3. 백엔드를 실행합니다.
 
 ```bash

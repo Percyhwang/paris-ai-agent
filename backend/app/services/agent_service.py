@@ -15,6 +15,12 @@ from app.core.config import settings
 from app.db.serializers import serialize_doc, serialize_many
 from app.schemas.trips import TripAgentModifyRequest, TripGenerateRequest
 from app.services.google_places_service import search_google_food_places
+from app.services.planning_brief_service import (
+    build_planning_brief,
+    extract_planning_brief,
+    mark_constraint_attempt,
+    validate_planning_brief_compliance,
+)
 from app.services.place_repository_service import distance_meters, midpoint
 from app.services.route_optimizer_service import attach_route_legs_to_days, optimize_trip_payload
 from app.services.trip_service import ensure_trip_ownership, get_trip_detail
@@ -106,12 +112,19 @@ async def modify_trip_with_agent(
     )
     await _apply_google_food_replacements(derived_state, modify_payload, language=language)
     itinerary_days = list(derived_state.get("itinerary_days") or [])
+    planning_brief = extract_planning_brief(trip) or build_planning_brief(
+        plan=_plan_payload_from_trip(trip),
+        trip=trip,
+        intent="modify_trip",
+    )
     await attach_route_legs_to_days(
         itinerary_days,
         prompt=request.prompt,
         style_tags=list(trip.get("style_tags") or []),
         language=language,
+        planning_brief=planning_brief,
     )
+    constraint_validation = validate_planning_brief_compliance(itinerary_days, planning_brief)
     derived_state["itinerary_days"] = itinerary_days
     await _persist_agent_modified_itinerary(
         db=db,
@@ -119,6 +132,8 @@ async def modify_trip_with_agent(
         trip_id=trip_id,
         itinerary_days=itinerary_days,
         route_summary=str(derived_state.get("route_summary") or trip.get("route_summary") or ""),
+        planning_brief=planning_brief,
+        constraint_validation=constraint_validation,
     )
     return await get_trip_detail(db, user_id, trip_id, language=language)
 
@@ -129,9 +144,120 @@ async def _optimize_payload_if_possible(
     request: TripGenerateRequest,
     language: str,
 ) -> dict[str, Any]:
-    if db is None:
-        return payload
-    return await optimize_trip_payload(db, payload, prompt=request.prompt, language=language)
+    planning_brief = extract_planning_brief(payload) or build_planning_brief(
+        plan=dict(payload.get("_plan_source") or {}),
+        request=request,
+        intent="create_trip",
+    )
+    current_payload = dict(payload)
+    current_payload["planning_brief"] = planning_brief
+    current_payload.setdefault("trip", {})["planning_brief"] = planning_brief
+    plan_source = dict(current_payload.get("_plan_source") or {})
+    max_replan_attempts = 2
+    seen_violation_signatures: set[tuple[str, ...]] = set()
+
+    for attempt in range(max_replan_attempts + 1):
+        if db is not None:
+            current_payload = await optimize_trip_payload(
+                db,
+                current_payload,
+                prompt=request.prompt,
+                language=language,
+                planning_brief=planning_brief,
+            )
+        validation = validate_planning_brief_compliance(list(current_payload.get("itinerary_days") or []), planning_brief)
+        current_payload["constraint_validation"] = validation
+        current_payload["planning_brief"] = planning_brief
+        current_payload.setdefault("trip", {})["planning_brief"] = planning_brief
+        current_payload["trip"]["constraint_validation"] = validation
+        requires_replan = _should_replan_validation(validation)
+        if not requires_replan or not plan_source:
+            if requires_replan:
+                current_payload["trip"]["status"] = "needs_review"
+            return current_payload
+
+        violation_signature = _validation_signature(validation)
+        if violation_signature in seen_violation_signatures or attempt >= max_replan_attempts:
+            current_payload["trip"]["status"] = "needs_review"
+            return current_payload
+        seen_violation_signatures.add(violation_signature)
+
+        reasons = [
+            *(str(value) for value in validation.get("violated_constraints") or []),
+            *(str(value) for value in validation.get("quality_violations") or []),
+            *(str(value) for value in validation.get("warnings") or [] if "helper" in str(value)),
+        ]
+        reason = ", ".join(reasons or ["constraint_violation"])
+        action = _replan_action(validation, planning_brief)
+        previous_blueprints = [
+            str(value)
+            for value in (
+                list(current_payload.get("selected_blueprints") or [])
+                or [
+                    str(day.get("blueprintArchetype") or day.get("dayArchetype") or "")
+                    for day in current_payload.get("itinerary_days") or []
+                    if str(day.get("blueprintArchetype") or day.get("dayArchetype") or "").strip()
+                ]
+            )
+            if str(value).strip()
+        ]
+        planning_brief = mark_constraint_attempt(
+            planning_brief,
+            attempt + 1,
+            reason,
+            action,
+            previous_blueprints=previous_blueprints,
+        )
+        current_payload = _generated_payload_from_plan(
+            plan_source,
+            request,
+            language=language,
+            planning_brief_override=planning_brief,
+        )
+    return current_payload
+
+
+def _should_replan_validation(validation: dict[str, Any]) -> bool:
+    if not isinstance(validation, dict):
+        return False
+    if not validation.get("is_valid"):
+        return True
+    if validation.get("quality_violations"):
+        return True
+    if any("helper" in str(value) for value in validation.get("warnings") or []):
+        return True
+    try:
+        final_quality = float(validation.get("final_quality_score") or validation.get("score") or 0)
+        story_flow = float(validation.get("story_flow_score") or 1)
+        return final_quality < 0.82 or story_flow < 0.72
+    except (TypeError, ValueError):
+        return False
+
+
+def _validation_signature(validation: dict[str, Any]) -> tuple[str, ...]:
+    values = [
+        *(str(value) for value in validation.get("violated_constraints") or []),
+        *(str(value) for value in validation.get("quality_violations") or []),
+        *(str(value) for value in validation.get("warnings") or [] if "helper" in str(value)),
+        *(str(value) for value in validation.get("missing_must_include") or []),
+        *(str(value) for value in validation.get("included_must_avoid") or []),
+    ]
+    return tuple(sorted(set(values)))
+
+
+def _replan_action(validation: dict[str, Any], planning_brief: dict[str, Any]) -> str:
+    missing = {str(value) for value in validation.get("missing_must_include") or [] if str(value)}
+    violated = {str(value) for value in validation.get("violated_constraints") or [] if str(value)}
+    quality = {str(value) for value in validation.get("quality_violations") or [] if str(value)}
+    helper_warning = any("helper" in str(value) for value in validation.get("warnings") or [])
+    has_eiffel = any("에펠" in value or "eiffel" in value.lower() for value in missing.union({str(value) for value in planning_brief.get("must_include") or []}))
+    if has_eiffel and (planning_brief.get("night_view_required") or "time_slots" in violated):
+        return "lock_eiffel_tower_to_night_slot"
+    if quality or helper_warning or "story_flow" in violated:
+        return "reduce_helper_blocks_and_rebuild"
+    if planning_brief.get("night_view_required") or "time_slots" in violated:
+        return "switch_to_evening_first_blueprint"
+    return "strengthen_planning_brief_and_rebuild"
 
 
 async def _generate_with_external_agent(request: TripGenerateRequest, language: str) -> dict[str, Any]:
@@ -676,21 +802,48 @@ def _agent_selected_places(itinerary_days: list[dict[str, Any]]) -> list[str]:
 
 
 def _plan_payload_from_trip(trip: dict[str, Any]) -> dict[str, Any]:
-    tags = [str(tag) for tag in trip.get("style_tags") or []]
-    pace = "slow" if "slow" in tags or "여유" in tags else "fast" if "fast" in tags else "normal"
+    planning_brief = extract_planning_brief(trip) or {}
+    tags = list(
+        dict.fromkeys(
+            [
+                *[str(tag) for tag in planning_brief.get("travel_style") or []],
+                *[str(tag) for tag in trip.get("style_tags") or []],
+            ]
+        )
+    )
+    pace = str(planning_brief.get("pace") or "").lower()
+    if pace not in {"slow", "normal", "fast"}:
+        pace = "slow" if "slow" in tags or "여유" in tags else "fast" if "fast" in tags else "normal"
+    budget_range = planning_brief.get("budget_range") if isinstance(planning_brief.get("budget_range"), dict) else {}
     return {
         "dates": {
             "start_date": _date_to_iso(trip.get("start_date")),
             "end_date": _date_to_iso(trip.get("end_date")),
             "days": trip.get("total_days"),
         },
+        "destination": {"city": planning_brief.get("destination") or "Paris", "country": "FR"},
         "preferences": {
             "themes": tags,
-            "must_include": [],
-            "must_avoid": [],
+            "must_include": list(planning_brief.get("must_include") or []),
+            "must_avoid": list(planning_brief.get("must_avoid") or []),
+            "travel_style": list(planning_brief.get("travel_style") or tags),
+            "preferred_time_slots": list(planning_brief.get("preferred_time_slots") or []),
+            "meal_preference": list(planning_brief.get("meal_preference") or []),
+            "night_view_required": bool(planning_brief.get("night_view_required")),
         },
         "pace": {"level": pace},
-        "mobility": {"travel_mode": "both", "optimize": "min_time"},
+        "budget": {
+            "currency": budget_range.get("currency") or "EUR",
+            "budget_total": budget_range.get("budget_total"),
+            "budget_per_day": budget_range.get("budget_per_day"),
+            "budget_mode": budget_range.get("budget_mode") or "normal",
+        },
+        "lodging": {"text": planning_brief.get("hotel_area_preference")},
+        "mobility": {
+            "travel_mode": planning_brief.get("transport_preference") or "both",
+            "optimize": "min_time",
+        },
+        "planning_brief": planning_brief,
     }
 
 
@@ -701,6 +854,8 @@ async def _persist_agent_modified_itinerary(
     trip_id: str,
     itinerary_days: list[dict[str, Any]],
     route_summary: str,
+    planning_brief: dict[str, Any] | None = None,
+    constraint_validation: dict[str, Any] | None = None,
 ) -> None:
     now = datetime.now(UTC)
     await db.itinerary_day.delete_many({"trip_id": trip_id})
@@ -723,6 +878,8 @@ async def _persist_agent_modified_itinerary(
             "$set": {
                 "route_summary": route_summary,
                 "status": "modified",
+                "planning_brief": planning_brief,
+                "constraint_validation": constraint_validation,
                 "updated_at": now,
             }
         },
@@ -829,17 +986,28 @@ def _normalize_generated_payload(
     language: str,
 ) -> dict[str, Any]:
     trip = dict(payload.get("trip") or {})
+    planning_brief = extract_planning_brief(payload) or extract_planning_brief({"trip": trip})
+    constraint_validation = payload.get("constraint_validation") or trip.get("constraint_validation")
     trip.setdefault("trip_title", _title_from_prompt(request.prompt, _resolve_total_days(request, {}), language))
     trip.setdefault("prompt", request.prompt)
     trip.setdefault("total_days", _resolve_total_days(request, {}))
     trip.setdefault("style_tags", list(request.style_tags) or _infer_tags(request.prompt))
     trip.setdefault("status", "generated")
     trip.setdefault("route_summary", _copy(language, "Agent-generated Paris itinerary draft.", "Agent가 생성한 파리 일정 초안입니다."))
-    return {
+    normalized = {
         "trip": trip,
         "itinerary_days": list(payload.get("itinerary_days") or []),
         "budget": dict(payload.get("budget") or _budget_from_days(int(trip.get("total_days") or 1))),
     }
+    if planning_brief:
+        trip["planning_brief"] = planning_brief
+        normalized["planning_brief"] = planning_brief
+    if isinstance(constraint_validation, dict):
+        trip["constraint_validation"] = constraint_validation
+        normalized["constraint_validation"] = constraint_validation
+    if isinstance(payload.get("_plan_source"), dict):
+        normalized["_plan_source"] = dict(payload["_plan_source"])
+    return normalized
 
 
 def _generated_payload_from_frontend_trip(
@@ -848,7 +1016,7 @@ def _generated_payload_from_frontend_trip(
     language: str,
 ) -> dict[str, Any]:
     total_days = int(trip.get("total_days") or _resolve_total_days(request, {}))
-    return {
+    payload = {
         "trip": {
             "trip_title": trip.get("trip_title") or _title_from_prompt(request.prompt, total_days, language),
             "prompt": trip.get("prompt") or request.prompt,
@@ -866,6 +1034,16 @@ def _generated_payload_from_frontend_trip(
         "itinerary_days": list(trip.get("itinerary_days") or []),
         "budget": _budget_from_days(total_days),
     }
+    planning_brief = extract_planning_brief({"trip": trip})
+    if planning_brief:
+        payload["planning_brief"] = planning_brief
+        payload["trip"]["planning_brief"] = planning_brief
+    if isinstance(trip.get("constraint_validation"), dict):
+        payload["constraint_validation"] = dict(trip["constraint_validation"])
+        payload["trip"]["constraint_validation"] = dict(trip["constraint_validation"])
+    if isinstance(trip.get("_plan_source"), dict):
+        payload["_plan_source"] = dict(trip["_plan_source"])
+    return payload
 
 
 def _generated_payload_from_agent_response(
@@ -875,9 +1053,15 @@ def _generated_payload_from_agent_response(
 ) -> dict[str, Any]:
     status = str(response.get("status") or "")
     data = dict(response.get("data") or {})
+    response_brief = data.get("planning_brief") if isinstance(data.get("planning_brief"), dict) else None
     if status == "ASK":
         plan = dict(data.get("plan") or {})
-        payload = _generated_payload_from_plan(plan, request, language=language)
+        payload = _generated_payload_from_plan(
+            plan,
+            request,
+            language=language,
+            planning_brief_override=response_brief or _extract_embedded_planning_brief(plan),
+        )
         payload["trip"]["status"] = "needs_review"
         payload["trip"]["route_summary"] = (
             f"{payload['trip']['route_summary']} "
@@ -888,11 +1072,18 @@ def _generated_payload_from_agent_response(
         raise HTTPException(status_code=502, detail="Agent failed to generate a trip")
 
     plan = dict(data.get("plan") or {})
+    embedded_brief = response_brief
     if not plan:
         bundle_plan = _extract_plan_from_bundle(data.get("bundle"))
         if bundle_plan:
             plan = bundle_plan
-    return _generated_payload_from_plan(plan, request, language=language)
+        embedded_brief = embedded_brief or _extract_planning_brief_from_bundle(data.get("bundle"))
+    return _generated_payload_from_plan(
+        plan,
+        request,
+        language=language,
+        planning_brief_override=embedded_brief or _extract_embedded_planning_brief(plan),
+    )
 
 
 def _extract_plan_from_bundle(bundle: Any) -> dict[str, Any] | None:
@@ -908,17 +1099,40 @@ def _extract_plan_from_bundle(bundle: Any) -> dict[str, Any] | None:
     return None
 
 
+def _extract_planning_brief_from_bundle(bundle: Any) -> dict[str, Any] | None:
+    if not isinstance(bundle, dict):
+        return None
+    for result in bundle.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        data = result.get("data") or {}
+        if isinstance(data, dict) and isinstance(data.get("planning_brief"), dict):
+            return dict(data["planning_brief"])
+    return None
+
+
+def _extract_embedded_planning_brief(payload: dict[str, Any]) -> dict[str, Any] | None:
+    brief = payload.get("_planning_brief")
+    return dict(brief) if isinstance(brief, dict) else None
+
+
 def _generated_payload_from_plan(
     plan: dict[str, Any],
     request: TripGenerateRequest,
     language: str,
+    planning_brief_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     total_days = _resolve_total_days(request, plan)
     start, end = _resolve_dates(request, plan, total_days)
-    themes = _plan_themes(plan)
+    themes = list(dict.fromkeys([*_plan_themes(plan), *request.style_tags, *_infer_tags(request.prompt)]))
     must_include = _plan_must_include(plan)
+    planning_brief = planning_brief_override or build_planning_brief(
+        plan=plan,
+        request=request,
+        intent="create_trip",
+    )
 
-    itinerary_days = _build_agent_itinerary_days(
+    itinerary_bundle = _build_agent_itinerary_bundle(
         plan=plan,
         start=start,
         total_days=total_days,
@@ -926,7 +1140,11 @@ def _generated_payload_from_plan(
         must_include=must_include,
         pace_level=_resolve_agent_pace_level(plan, request, themes),
         language=language,
+        planning_brief=planning_brief,
     )
+    itinerary_days = list(itinerary_bundle.get("itinerary_days") or [])
+    selected_blueprints = list(itinerary_bundle.get("selected_blueprints") or [])
+    route_summary = str(itinerary_bundle.get("route_summary") or _route_summary_from_plan(plan, language))
 
     tags = list(dict.fromkeys([*request.style_tags, *themes, *_infer_tags(request.prompt), *_mobility_tags(plan)]))
     return {
@@ -938,10 +1156,14 @@ def _generated_payload_from_plan(
             "total_days": total_days,
             "style_tags": tags or _infer_tags(request.prompt),
             "status": "generated",
-            "route_summary": _route_summary_from_plan(plan, language),
+            "route_summary": route_summary,
+            "planning_brief": planning_brief,
         },
         "itinerary_days": itinerary_days,
         "budget": _budget_from_days(total_days, plan),
+        "planning_brief": planning_brief,
+        "selected_blueprints": selected_blueprints,
+        "_plan_source": dict(plan),
     }
 
 
@@ -994,7 +1216,7 @@ def _build_agent_day(
     }
 
 
-def _build_agent_itinerary_days(
+def _build_agent_itinerary_bundle(
     *,
     plan: dict[str, Any],
     start: date,
@@ -1003,23 +1225,28 @@ def _build_agent_itinerary_days(
     must_include: list[str],
     pace_level: str,
     language: str,
-) -> list[dict[str, Any]]:
+    planning_brief: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     _ensure_repo_root_on_path()
     try:
         from parser_api.services.place_catalog import build_itinerary
     except ModuleNotFoundError:
-        return [
-            _build_agent_day(
-                day_number=day_number,
-                day_date=start + timedelta(days=day_number - 1),
-                total_days=total_days,
-                themes=themes,
-                must_include=must_include,
-                plan=plan,
-                language=language,
-            )
-            for day_number in range(1, total_days + 1)
-        ]
+        return {
+            "itinerary_days": [
+                _build_agent_day(
+                    day_number=day_number,
+                    day_date=start + timedelta(days=day_number - 1),
+                    total_days=total_days,
+                    themes=themes,
+                    must_include=must_include,
+                    plan=plan,
+                    language=language,
+                )
+                for day_number in range(1, total_days + 1)
+            ],
+            "route_summary": _route_summary_from_plan(plan, language),
+            "selected_blueprints": [],
+        }
 
     payload = {
         "dates": {
@@ -1030,11 +1257,18 @@ def _build_agent_itinerary_days(
             "themes": themes,
             "must_include": must_include,
             "must_avoid": list(((plan.get("preferences") or {}).get("must_avoid") or [])),
+            "travel_style": _plan_preference_list(plan, "travel_style"),
+            "preferred_time_slots": _plan_preference_list(plan, "preferred_time_slots"),
+            "meal_preference": _plan_preference_list(plan, "meal_preference"),
+            "night_view_required": _plan_night_view_required(plan, themes),
         },
+        "party": plan.get("party") or {},
+        "budget": plan.get("budget") or {},
         "pace": {"level": pace_level},
         "mobility": plan.get("mobility") or {"travel_mode": "both", "optimize": "min_time"},
+        "planning_brief": planning_brief or {},
     }
-    return list(build_itinerary(payload).get("itinerary_days") or [])
+    return dict(build_itinerary(payload) or {})
 
 
 def _resolve_agent_pace_level(plan: dict[str, Any], request: TripGenerateRequest, themes: list[str]) -> str:
@@ -1134,12 +1368,26 @@ def _plan_themes(plan: dict[str, Any]) -> list[str]:
     return []
 
 
+def _plan_preference_list(plan: dict[str, Any], field_name: str) -> list[str]:
+    preferences = plan.get("preferences") if isinstance(plan.get("preferences"), dict) else {}
+    values = preferences.get(field_name) if isinstance(preferences, dict) else []
+    if isinstance(values, list):
+        return [str(value) for value in values if value]
+    return []
+
+
 def _plan_must_include(plan: dict[str, Any]) -> list[str]:
     preferences = plan.get("preferences") if isinstance(plan.get("preferences"), dict) else {}
     must_include = preferences.get("must_include") if isinstance(preferences, dict) else []
     if isinstance(must_include, list):
         return [str(place) for place in must_include if place]
     return []
+
+
+def _plan_night_view_required(plan: dict[str, Any], themes: list[str]) -> bool:
+    preferences = plan.get("preferences") if isinstance(plan.get("preferences"), dict) else {}
+    flag = preferences.get("night_view_required") if isinstance(preferences, dict) else False
+    return bool(flag) or "night_view" in themes
 
 
 def _mobility_tags(plan: dict[str, Any]) -> list[str]:
@@ -1204,43 +1452,42 @@ def _date_to_iso(value: date | str | None) -> str | None:
     return value
 
 
-def _mock_trip_payload(request: TripGenerateRequest, language: str) -> dict[str, Any]:
+def _fallback_plan_from_request(request: TripGenerateRequest) -> dict[str, Any]:
     total_days = request.total_days or _infer_days(request.prompt) or 3
     start = request.start_date or (date.today() + timedelta(days=45))
-    end = request.end_date or (start + timedelta(days=total_days - 1))
-    tags = request.style_tags or _infer_tags(request.prompt)
-
-    itinerary_days = [
-        _build_agent_day(
-            day_number=index + 1,
-            day_date=start + timedelta(days=index),
-            total_days=total_days,
-            themes=tags,
-            must_include=[],
-            plan={},
-            language=language,
-        )
-        for index in range(total_days)
-    ]
-
+    tags = list(dict.fromkeys(request.style_tags or _infer_tags(request.prompt)))
+    night_view_required = "night_view" in tags
     return {
-        "trip": {
-            "trip_title": _title_from_prompt(request.prompt, total_days, language),
-            "prompt": request.prompt,
-            "start_date": start,
-            "end_date": end,
-            "total_days": total_days,
-            "style_tags": tags,
-            "status": "generated",
-            "route_summary": _copy(
-                language,
-                "Paris itinerary draft generated from the local fallback planner.",
-                "로컬 fallback planner로 생성한 파리 일정 초안입니다.",
-            ),
+        "dates": {
+            "start_date": start.isoformat(),
+            "days": total_days,
         },
-        "itinerary_days": itinerary_days,
-        "budget": _budget_from_days(total_days),
+        "preferences": {
+            "themes": tags,
+            "must_include": [],
+            "must_avoid": [],
+            "travel_style": tags,
+            "preferred_time_slots": ["evening", "night"] if night_view_required else [],
+            "meal_preference": ["cafe"] if "cafe" in tags or "foodie" in tags else [],
+            "night_view_required": night_view_required,
+        },
+        "pace": {
+            "level": "slow" if any(tag in {"slow", "relax", "relaxed", "healing", "여유", "휴식"} for tag in tags) else "normal"
+        },
+        "mobility": {"travel_mode": "both", "optimize": "min_time"},
     }
+
+
+def _mock_trip_payload(request: TripGenerateRequest, language: str) -> dict[str, Any]:
+    payload = _generated_payload_from_plan(_fallback_plan_from_request(request), request, language=language)
+    fallback_note = _copy(
+        language,
+        "Paris itinerary draft generated from the local fallback planner.",
+        "로컬 fallback planner로 생성한 파리 일정 초안입니다.",
+    )
+    existing_summary = str(payload["trip"].get("route_summary") or "").strip()
+    payload["trip"]["route_summary"] = f"{existing_summary} {fallback_note}".strip()
+    return payload
 
 
 def _infer_days(prompt: str) -> int | None:

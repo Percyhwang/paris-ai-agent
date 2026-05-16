@@ -13,80 +13,104 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 logger = logging.getLogger(__name__)
 
 PARIS_CENTER = {"lat": 48.8566, "lng": 2.3522}
-MEAL_CATEGORIES = {"cafe", "restaurant", "bakery", "bistro", "brasserie"}
+MEAL_CATEGORIES = {"bar", "bakery", "bistro", "brasserie", "cafe", "restaurant"}
 
 CANONICAL_PLACES: list[dict[str, Any]] = [
     {
         "name": "Eiffel Tower",
         "category": "landmark",
         "coordinates": {"lat": 48.8584, "lng": 2.2945},
-        "aliases": ["Tour Eiffel", "Bureau de Gustave Eiffel"],
+        "aliases": ["Tour Eiffel", "Bureau de Gustave Eiffel", "에펠탑", "에펠타워"],
     },
     {
         "name": "Louvre Museum",
         "category": "museum",
         "coordinates": {"lat": 48.8606, "lng": 2.3376},
-        "aliases": ["Louvre", "Musee du Louvre", "Musee Louvre"],
+        "aliases": ["Louvre", "Musee du Louvre", "Musee Louvre", "루브르", "루브르 박물관"],
     },
     {
         "name": "Musee d'Orsay",
         "category": "museum",
         "coordinates": {"lat": 48.86, "lng": 2.3266},
-        "aliases": ["Musee d'Orsay", "Orsay Museum", "Musée d'Orsay"],
+        "aliases": ["Musee d'Orsay", "Orsay Museum", "Musée d'Orsay", "오르세", "오르세 미술관"],
     },
     {
         "name": "Notre-Dame",
         "category": "landmark",
         "coordinates": {"lat": 48.853, "lng": 2.3499},
-        "aliases": ["Notre-Dame Cathedral", "Tours de Notre-Dame"],
+        "aliases": ["Notre-Dame Cathedral", "Tours de Notre-Dame", "노트르담", "노트르담 대성당"],
     },
     {
         "name": "Montmartre",
         "category": "landmark",
         "coordinates": {"lat": 48.8867, "lng": 2.3431},
-        "aliases": ["Sacre-Coeur", "Sacré-Cœur", "Le Montmartre"],
+        "aliases": ["Sacre-Coeur", "Sacré-Cœur", "Le Montmartre", "몽마르트르", "사크레쾨르"],
     },
     {
         "name": "Le Marais",
         "category": "landmark",
         "coordinates": {"lat": 48.8575, "lng": 2.358},
-        "aliases": ["Marais", "Café du Marais"],
+        "aliases": ["Marais", "Café du Marais", "마레", "마레 지구"],
     },
     {
         "name": "Luxembourg Gardens",
         "category": "park",
         "coordinates": {"lat": 48.8462, "lng": 2.3372},
-        "aliases": ["Luxembourg Garden", "Jardin du Luxembourg"],
+        "aliases": ["Luxembourg Garden", "Jardin du Luxembourg", "뤽상부르 공원"],
     },
     {
         "name": "Tuileries Garden",
         "category": "park",
         "coordinates": {"lat": 48.8635, "lng": 2.327},
-        "aliases": ["Jardin des Tuileries", "Tuileries"],
+        "aliases": ["Jardin des Tuileries", "Tuileries", "튈르리 정원"],
     },
     {
         "name": "Seine River",
         "category": "landmark",
         "coordinates": {"lat": 48.8583, "lng": 2.3375},
-        "aliases": ["Seine", "Pont des Arts"],
+        "aliases": ["Seine", "Pont des Arts", "센강", "센강 산책"],
     },
     {
         "name": "Le Bon Marche",
         "category": "shopping",
         "coordinates": {"lat": 48.8512, "lng": 2.3255},
-        "aliases": ["Le Bon Marché"],
+        "aliases": ["Le Bon Marché", "봉마르셰"],
     },
     {
         "name": "Galeries Lafayette",
         "category": "shopping",
         "coordinates": {"lat": 48.8738, "lng": 2.3321},
-        "aliases": ["Galeries Lafayette Haussmann"],
+        "aliases": ["Galeries Lafayette Haussmann", "갤러리 라파예트"],
     },
     {
         "name": "Saint-Germain-des-Pres",
         "category": "landmark",
         "coordinates": {"lat": 48.8538, "lng": 2.3336},
-        "aliases": ["Saint-Germain cafe walk", "Saint-Germain-des-Prés"],
+        "aliases": ["Saint-Germain cafe walk", "Saint-Germain-des-Prés", "생제르맹", "생제르맹데프레"],
+    },
+    {
+        "name": "Arc de Triomphe",
+        "category": "landmark",
+        "coordinates": {"lat": 48.8738, "lng": 2.295},
+        "aliases": ["개선문", "Arc de Triomphe de l'Étoile"],
+    },
+    {
+        "name": "Champs-Elysees",
+        "category": "landmark",
+        "coordinates": {"lat": 48.8698, "lng": 2.3078},
+        "aliases": ["Champs Élysées", "샹젤리제", "샹젤리제 거리"],
+    },
+    {
+        "name": "Sainte-Chapelle",
+        "category": "cathedral",
+        "coordinates": {"lat": 48.8554, "lng": 2.345},
+        "aliases": ["생트샤펠"],
+    },
+    {
+        "name": "Palais Garnier",
+        "category": "landmark",
+        "coordinates": {"lat": 48.8719, "lng": 2.3316},
+        "aliases": ["오페라 가르니에", "Opéra Garnier"],
     },
 ]
 
@@ -270,14 +294,16 @@ async def _find_place_document(
     if not name:
         return None
 
+    slug = slug_for_place(name)
+    exact_matchers: list[dict[str, Any]] = [
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"aliases": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+    ]
+    if slug != "place":
+        exact_matchers.append({"slug": slug})
+
     exact = await db.places.find_one(
-        {
-            "$or": [
-                {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
-                {"aliases": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
-                {"slug": slug_for_place(name)},
-            ]
-        }
+        {"$or": exact_matchers}
     )
     if exact:
         return exact
@@ -303,13 +329,13 @@ def _canonical_match(name: str) -> dict[str, Any] | None:
 
 
 def _token_query(name: str, category: str | None) -> dict[str, Any] | None:
-    tokens = [token for token in re.split(r"[^a-zA-Z0-9À-ÿ']+", name) if len(token) >= 4]
+    tokens = [token for token in re.split(r"[^a-zA-Z0-9À-ÿ가-힣']+", name) if len(token) >= 2]
     if not tokens:
         return None
     expressions: list[dict[str, Any]] = [{"name": {"$regex": re.escape(token), "$options": "i"}} for token in tokens[:3]]
     expressions.extend({"aliases": {"$regex": re.escape(token), "$options": "i"}} for token in tokens[:3])
     query: dict[str, Any] = {"$or": expressions}
-    if category and category not in {"landmark", "shopping"}:
+    if category:
         query["category"] = category
     return query
 

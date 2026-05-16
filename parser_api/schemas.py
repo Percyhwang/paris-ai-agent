@@ -83,6 +83,10 @@ class Preferences(BaseModel):
     themes: List[str] = Field(default_factory=list)
     must_include: List[str] = Field(default_factory=list)
     must_avoid: List[str] = Field(default_factory=list)
+    travel_style: List[str] = Field(default_factory=list)
+    preferred_time_slots: List[Literal["morning", "lunch", "afternoon", "evening", "night"]] = Field(default_factory=list)
+    meal_preference: List[str] = Field(default_factory=list)
+    night_view_required: bool = False
 
 
 class Constraints(BaseModel):

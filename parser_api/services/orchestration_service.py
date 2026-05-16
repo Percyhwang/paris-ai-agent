@@ -14,6 +14,7 @@ from parser_api.schemas import (
     RequestBundleAction,
     RequestBundlePayload,
 )
+from parser_api.services.planning_brief_service import attach_planning_brief
 
 PAYLOAD_DATA_KEYS = {
     Intent.REQUEST_BUNDLE: "bundle",
@@ -139,13 +140,20 @@ class AgentOrchestrator:
         data_key = PAYLOAD_DATA_KEYS[intent]
         payload_dict = _strip_clarify(parsed_payload.model_dump())
         normalized_context = dict(context or {})
+        planning_context = {**normalized_context, "message": message}
 
         if clarify.needed:
             return AgentRunResponse(
                 status="ASK",
                 intent=parsed_payload.intent,
                 trip_id=self._response_trip_id(intent, parsed_payload),
-                data={data_key: payload_dict},
+                data=attach_planning_brief(
+                    {data_key: payload_dict},
+                    intent=intent,
+                    parsed_payload=parsed_payload,
+                    context=planning_context,
+                    data_key=data_key,
+                ),
                 clarify=clarify,
             )
 
@@ -160,7 +168,13 @@ class AgentOrchestrator:
                 status="ASK",
                 intent=parsed_payload.intent,
                 trip_id=self._response_trip_id(intent, parsed_payload),
-                data=ask_data,
+                data=attach_planning_brief(
+                    ask_data,
+                    intent=intent,
+                    parsed_payload=parsed_payload,
+                    context=planning_context,
+                    data_key=data_key,
+                ),
                 clarify=clarify,
             )
 
@@ -200,7 +214,13 @@ class AgentOrchestrator:
             status="DONE",
             intent=parsed_payload.intent,
             trip_id=result.trip_id,
-            data=response_data,
+            data=attach_planning_brief(
+                response_data,
+                intent=intent,
+                parsed_payload=parsed_payload,
+                context=planning_context,
+                data_key=data_key,
+            ),
             clarify=clarify,
         )
 

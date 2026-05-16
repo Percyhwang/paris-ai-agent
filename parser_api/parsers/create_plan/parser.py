@@ -13,7 +13,6 @@ class CreatePlanParser:
     intent = Intent.CREATE_PLAN
 
     def parse(self, message: str, context: Optional[dict] = None) -> CreatePlanPayload:
-        del context
         last_error: Optional[Exception] = None
 
         for attempt in range(2):
@@ -21,7 +20,7 @@ class CreatePlanParser:
                 raw = _call_llm_structured(message)
                 raw = _normalize_llm_payload(raw)
                 plan = CreatePlanPayload.model_validate(raw)
-                plan = _apply_rule_overrides(plan, message)
+                plan = _apply_rule_overrides(plan, message, context)
                 return plan
             except (ValidationError, LLMStructuredOutputError) as exc:
                 last_error = exc
@@ -32,7 +31,7 @@ class CreatePlanParser:
 
         print(f"[CREATE_PLAN_PARSER] fallback to rules. last_error={repr(last_error)}")
         plan = CreatePlanPayload()
-        plan = _apply_rule_overrides(plan, message)
+        plan = _apply_rule_overrides(plan, message, context)
         return plan
 
 

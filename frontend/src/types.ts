@@ -97,9 +97,15 @@ export type RouteLeg = {
   duration_seconds?: number | null;
   duration_text: string;
   buffer_minutes?: number | null;
+  rawDurationMinutes?: number | null;
+  bufferMinutes?: number | null;
+  totalTransferMinutes?: number | null;
   scheduled_duration_seconds?: number | null;
   scheduled_duration_text?: string | null;
   compact_summary?: string | null;
+  comfort_summary?: string | null;
+  effort_level?: "low" | "medium" | "high" | null;
+  restBufferReason?: string | null;
   steps: RouteStep[];
   transit_lines: string[];
   fallback: boolean;
@@ -110,6 +116,7 @@ export type ItineraryItem = {
   time_slot: "morning" | "lunch" | "afternoon" | "evening";
   start_time: string;
   end_time?: string | null;
+  itemKind?: "stop" | "gap" | null;
   title: string;
   place: ItineraryPlace;
   description: string;
@@ -118,6 +125,15 @@ export type ItineraryItem = {
   role_label?: string | null;
   role_icon?: string | null;
   reasoning?: string | null;
+  slotPurpose?: string | null;
+  userPreferenceReason?: string | null;
+  timeReason?: string | null;
+  restBufferReason?: string | null;
+  isNightViewSpot?: boolean | null;
+  expectedExperience?: string | null;
+  editableReason?: string | null;
+  gapReason?: string | null;
+  nearbyMealNeeded?: boolean | null;
   energy_level?: number | null;
   route_to_next?: RouteLeg | null;
 };
@@ -128,6 +144,9 @@ export type ItineraryDay = {
   date?: string | null;
   title: string;
   theme?: string | null;
+  dayTheme?: string | null;
+  daySummary?: string | null;
+  routeSummary?: string | null;
   items: ItineraryItem[];
   route_summary?: string | null;
 };
@@ -142,6 +161,8 @@ export type Trip = {
   total_days: number;
   style_tags: string[];
   status: string;
+  planning_brief?: Record<string, unknown> | null;
+  constraint_validation?: Record<string, unknown> | null;
   itinerary_days: ItineraryDay[];
   route_summary?: string | null;
   created_at: string;

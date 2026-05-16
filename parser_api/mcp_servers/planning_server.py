@@ -11,6 +11,7 @@ from parser_api.schemas import (
     ModifyPlanPayload,
     TripDiaryPayload,
 )
+from parser_api.services.planning_brief_service import build_unified_planning_brief
 from parser_api.services.trip_store import (
     delete_saved_trip,
     get_saved_trip,
@@ -46,9 +47,11 @@ def _resolve_trip_id(payload: ManageTripPayload, context: dict[str, Any] | None)
 
 @mcp.tool
 def create_plan(payload: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
-    del context
     validated = CreatePlanPayload.model_validate(payload)
-    derived_state = generate_itinerary(validated.model_dump())
+    planning_brief = build_unified_planning_brief(Intent.CREATE_PLAN, validated, context)
+    derived_state = generate_itinerary({**validated.model_dump(), "planning_brief": planning_brief or {}})
+    if planning_brief:
+        derived_state["planning_brief"] = planning_brief
     trip_id, trip_state = save_create_plan_trip(
         validated.model_dump(),
         meta={
@@ -66,9 +69,10 @@ def modify_plan(payload: dict[str, Any], context: dict[str, Any] | None = None) 
     validated = ModifyPlanPayload.model_validate(payload)
     if not validated.trip_id and context and context.get("trip_id"):
         validated.trip_id = str(context["trip_id"])
+    planning_brief = build_unified_planning_brief(Intent.MODIFY_PLAN, validated, context)
 
     existing_state = get_trip_state(validated.trip_id) if validated.trip_id else None
-    derived_state: dict[str, Any] | None = None
+    derived_state: dict[str, Any] | None = {"planning_brief": planning_brief} if planning_brief else None
     if existing_state and existing_state.get("plan"):
         derived_state = update_itinerary(
             plan_payload=dict(existing_state.get("plan") or {}),
@@ -76,6 +80,8 @@ def modify_plan(payload: dict[str, Any], context: dict[str, Any] | None = None) 
             existing_itinerary_days=list(existing_state.get("itinerary_days") or []),
             existing_route_summary=str(existing_state.get("route_summary") or ""),
         )
+        if planning_brief:
+            derived_state["planning_brief"] = planning_brief
 
     trip_id, trip_state = save_modify_plan_trip(
         validated.model_dump(),

@@ -23,7 +23,7 @@ def _normalize_llm_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
     prefs = data.get("preferences", {})
     if not isinstance(prefs.get("weights"), dict):
         prefs["weights"] = {}
-    for arr_key in ("themes", "must_include", "must_avoid"):
+    for arr_key in ("themes", "must_include", "must_avoid", "travel_style", "preferred_time_slots", "meal_preference"):
         value = prefs.get(arr_key)
         if value is None:
             prefs[arr_key] = []
@@ -31,6 +31,8 @@ def _normalize_llm_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
             prefs[arr_key] = [value]
         elif not isinstance(value, list):
             prefs[arr_key] = []
+    if not isinstance(prefs.get("night_view_required"), bool):
+        prefs["night_view_required"] = False
     data["preferences"] = prefs
 
     clarify = data.get("clarify", {})
