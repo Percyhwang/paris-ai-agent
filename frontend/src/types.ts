@@ -163,6 +163,25 @@ export type Trip = {
   status: string;
   planning_brief?: Record<string, unknown> | null;
   constraint_validation?: Record<string, unknown> | null;
+  agent_evaluation?: Record<string, unknown> | null;
+  agent_warnings?: string[];
+  agent_explanation?: Record<string, unknown> | null;
+  agent_trace?: Record<string, unknown> | null;
+  agent_summary?: string | null;
+  understood_constraints?: Record<string, unknown>;
+  repair_summary?: Record<string, unknown>;
+  replan_attempts?: number | null;
+  evaluation_summary?: string[];
+  warnings?: string[];
+  memory_used?: boolean;
+  frontend_display?: Record<string, unknown> | null;
+  places?: ItineraryPlace[];
+  route_legs?: RouteLeg[];
+  schedule?: Array<Record<string, unknown>>;
+  days?: ItineraryDay[];
+  updated_itinerary?: ItineraryDay[];
+  changed_items?: Array<Record<string, unknown>>;
+  preserved_items?: Array<Record<string, unknown>>;
   itinerary_days: ItineraryDay[];
   route_summary?: string | null;
   created_at: string;
@@ -175,6 +194,20 @@ export type TripGenerateRequest = {
   end_date?: string;
   total_days?: number;
   style_tags?: string[];
+};
+
+export type TripGenerationJob = {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  stage: string;
+  progress: number;
+  message: string;
+  trip_id?: string | null;
+  trip?: Trip | null;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
 };
 
 export type BudgetItem = {

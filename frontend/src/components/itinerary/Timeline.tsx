@@ -237,7 +237,18 @@ function getDisplaySteps(leg: RouteLeg) {
 }
 
 function formatTimeRange(item: ItineraryItem) {
-  return item.end_time ? `${item.start_time}-${item.end_time}` : item.start_time;
+  const start = formatDisplayClock(item.start_time);
+  const end = item.end_time ? formatDisplayClock(item.end_time) : null;
+  return end ? `${start}-${end}` : start;
+}
+
+function formatDisplayClock(clock: string) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(clock.trim());
+  if (!match) return clock;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23) return "23:59";
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function formatDistance(meters: number) {

@@ -112,6 +112,12 @@ CANONICAL_PLACES: list[dict[str, Any]] = [
         "coordinates": {"lat": 48.8719, "lng": 2.3316},
         "aliases": ["오페라 가르니에", "Opéra Garnier"],
     },
+    {
+        "name": "Palais Royal",
+        "category": "landmark",
+        "coordinates": {"lat": 48.8635, "lng": 2.3376},
+        "aliases": ["팔레 루아얄", "팔레루아얄", "Palais-Royal", "Palais Royal"],
+    },
 ]
 
 
@@ -122,7 +128,12 @@ async def ensure_places_seed_data(db: AsyncIOMotorDatabase) -> None:
     if existing_osm:
         return
 
-    data_path = Path(__file__).resolve().parents[3] / "data_assets" / "paris_places_clean.json"
+    service_path = Path(__file__).resolve()
+    data_path_candidates = [
+        service_path.parents[2] / "data_assets" / "paris_places_clean.json",
+        service_path.parents[3] / "data_assets" / "paris_places_clean.json",
+    ]
+    data_path = next((path for path in data_path_candidates if path.exists()), data_path_candidates[0])
     if not data_path.exists():
         logger.warning("Paris places seed file was not found at %s", data_path)
         return
@@ -194,9 +205,14 @@ def itinerary_place_from_document(
 ) -> dict[str, Any]:
     return {
         "place_id": str(doc.get("_id")) if doc.get("_id") else None,
+        "slug": doc.get("slug"),
         "name": str(doc.get("name") or fallback_name),
         "category": str(doc.get("category") or fallback_category or "landmark"),
         "coordinates": coordinates_from_place_document(doc),
+        "tags": doc.get("tags"),
+        "cuisine": doc.get("cuisine"),
+        "rating": doc.get("rating"),
+        "source": doc.get("source"),
     }
 
 

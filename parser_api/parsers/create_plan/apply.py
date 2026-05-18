@@ -28,11 +28,12 @@ from parser_api.schemas import CreatePlanPayload
 
 
 MEAL_STYLE_TOKENS: dict[str, tuple[str, ...]] = {
-    "brunch": ("브런치", "brunch"),
+    "brunch": ("브런치", "늦은 아침", "늦은아침", "brunch"),
     "cafe": ("카페", "cafe", "coffee"),
     "dessert": ("디저트", "dessert", "케이크", "베이커리", "빵지순례"),
     "bistro": ("비스트로", "bistro", "brasserie"),
     "wine": ("와인", "wine", "bar"),
+    "jazz_bar": ("재즈", "재즈바", "jazz", "jazz bar"),
 }
 
 STYLE_TAG_THEME_MAP = {
@@ -59,8 +60,11 @@ def _context_style_tags(context: dict | None) -> list[str]:
 
 
 def _extract_meal_preferences(message: str) -> list[str]:
+    compact = message.replace(" ", "")
     preferences: list[str] = []
     for style, tokens in MEAL_STYLE_TOKENS.items():
+        if style == "jazz_bar" and any(token in compact for token in ("재즈바는제외", "재즈바제외", "재즈바빼", "재즈는제외", "재즈제외")):
+            continue
         if any(token in message for token in tokens):
             preferences.append(style)
     return list(dict.fromkeys(preferences))
@@ -169,6 +173,8 @@ def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict |
         plan.budget.budget_mode = "flex"
     if "save" in context_tags or "budget" in context_tags:
         plan.budget.budget_mode = "save"
+    if any(token in compact for token in ("아끼", "저예산", "무료", "유료입장")):
+        plan.budget.budget_mode = "save"
 
     if any(token in compact for token in INDOOR_TOKENS):
         plan.constraints.indoor_focus = True
@@ -200,6 +206,16 @@ def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict |
         for slot in ("evening", "night"):
             if slot not in preferred_slots:
                 preferred_slots.append(slot)
+    if any(token in compact for token in ("석양", "선셋", "sunset")) and "evening" not in preferred_slots:
+        preferred_slots.append("evening")
+    jazz_avoided = any(token in compact for token in ("재즈바는제외", "재즈바제외", "재즈바빼", "재즈는제외", "재즈제외"))
+    if any(token in compact for token in ("재즈", "재즈바", "jazz")) and not jazz_avoided:
+        for slot in ("evening", "night"):
+            if slot not in preferred_slots:
+                preferred_slots.append(slot)
+        for theme in ("local", "nightlife"):
+            if theme not in plan.preferences.themes:
+                plan.preferences.themes.append(theme)
 
     if "slow" in context_tags and not preferred_slots:
         preferred_slots = ["morning", "afternoon", "evening" if night_view_required else "lunch"]

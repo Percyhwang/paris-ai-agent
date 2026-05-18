@@ -9,11 +9,24 @@ type PlaceCardProps = {
 
 export function PlaceCard({ place, onSelect }: PlaceCardProps) {
   const { language } = useLanguage();
+  const imageUrl = place.image_url || "/images/paris-default-hero.jpeg";
 
   return (
-    <article className="place-card" onClick={() => onSelect(place)}>
+    <article className="place-card" onClick={() => onSelect(place)} role="button" tabIndex={0} onKeyDown={(event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onSelect(place);
+      }
+    }}>
       <div className="place-image-frame">
-        <img src={place.image_url} alt={place.name} />
+        <img
+          src={imageUrl}
+          alt={place.name}
+          loading="lazy"
+          onError={(event) => {
+            event.currentTarget.src = "/images/paris-default-hero.jpeg";
+          }}
+        />
       </div>
       <div className="place-card-body">
         <span className="category-pill">{getPlaceCategoryLabel(place.category, language)}</span>

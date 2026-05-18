@@ -8,6 +8,7 @@ export interface HotelRecommendation extends Hotel {
 
 export interface RecommendHotelsResult {
   hotels: HotelRecommendation[];
+  hotel_candidates?: HotelRecommendation[];
   parsedParams: {
     destination: string;
     checkin: string;
@@ -17,6 +18,13 @@ export interface RecommendHotelsResult {
     preferences: string[];
   };
   count: number;
+  trip_id?: string | null;
+  agent_summary?: string;
+  ranking_reason?: string[];
+  ranking_summary?: Record<string, unknown>;
+  search_conditions?: Record<string, unknown>;
+  warnings?: string[];
+  frontend_display?: Record<string, unknown>;
 }
 
 export interface Hotel {
@@ -56,7 +64,7 @@ export async function searchHotels(params: {
   currency?: string;
   language?: string;
   limit?: number;
-}): Promise<{ hotels: Hotel[]; count: number; destId: string }> {
+}): Promise<{ hotels: Hotel[]; hotel_candidates?: Hotel[]; count: number; destId: string; warnings?: string[]; frontend_display?: Record<string, unknown> }> {
   const query = new URLSearchParams();
   query.set("destination", params.destination);
   query.set("checkin", params.checkin);

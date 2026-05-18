@@ -29,11 +29,31 @@ export function clearTokens(): void {
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const response = await fetchWithAuth(path, { retryOnUnauthorized: true, ...options });
-  const envelope = (await response.json()) as ApiResponse<T>;
+  const envelope = await parseApiResponse<T>(response);
   if (!response.ok || !envelope.success) {
     throw new Error(envelope.message || envelope.error?.code || "API request failed");
   }
   return envelope.data;
+}
+
+async function parseApiResponse<T>(response: Response): Promise<ApiResponse<T>> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const bodyText = await response.text();
+
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(bodyText) as ApiResponse<T>;
+    } catch {
+      throw new Error("API returned malformed JSON.");
+    }
+  }
+
+  if (response.status === 504) {
+    throw new Error("일정 생성 시간이 길어져 서버 응답이 지연되었습니다. 잠시 후 다시 시도해 주세요.");
+  }
+
+  const fallback = bodyText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  throw new Error(fallback || `API request failed with status ${response.status}`);
 }
 
 async function fetchWithAuth(path: string, options: ApiRequestOptions): Promise<Response> {
@@ -81,7 +101,7 @@ async function refreshAccessToken(): Promise<boolean> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
-    const envelope = (await response.json()) as ApiResponse<TokenPair>;
+    const envelope = await parseApiResponse<TokenPair>(response);
     if (!response.ok || !envelope.success) return false;
     storeTokens(envelope.data);
     return true;

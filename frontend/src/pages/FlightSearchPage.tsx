@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { AgentSummaryCard } from "../components/agent/AgentSummaryCard";
 import { PageContainer } from "../components/common/PageContainer";
 import { useLanguage } from "../store/LanguageContext";
 import { recommendFlights, type FlightRecommendation, type FlightSegment } from "../services/flightService";
@@ -95,6 +96,9 @@ export function FlightSearchPage() {
     origin?: string; destination?: string; departure_date?: string;
     return_date?: string | null; adults?: number; preferences?: string[];
   } | null>(null);
+  const [agentSummary, setAgentSummary] = useState<string | null>(null);
+  const [rankingSummary, setRankingSummary] = useState<Record<string, unknown> | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,6 +113,9 @@ export function FlightSearchPage() {
       const result = await recommendFlights(query);
       setFlights(result.flights);
       setParsedParams(result.parsedParams);
+      setAgentSummary(result.agent_summary ?? null);
+      setRankingSummary(result.ranking_summary ?? null);
+      setWarnings(result.warnings ?? []);
       if (result.flights.length === 0) setError(copy.noResults);
     } catch (err) {
       setError(err instanceof Error ? err.message : "추천 요청에 실패했습니다.");
@@ -139,6 +146,14 @@ export function FlightSearchPage() {
         </form>
 
         {error && <p className="error-message">{error}</p>}
+
+        <AgentSummaryCard
+          title={language === "en" ? "Flight agent review" : "항공권 Agent 검토"}
+          summary={agentSummary}
+          constraints={parsedParams as Record<string, unknown> | null}
+          repairSummary={rankingSummary}
+          warnings={warnings}
+        />
 
         {/* ── AI가 이해한 조건 요약 ── */}
         {parsedParams && !loading && (

@@ -186,6 +186,22 @@ FEATURED_PLACES: list[dict[str, Any]] = [
         "popularity": 80,
     },
     {
+        "slug": "palais-royal",
+        "name": "팔레 루아얄",
+        "category": "landmark",
+        "coordinates": {"lat": 48.8635, "lng": 2.3376},
+        "image_url": "/images/paris-default-hero.jpeg",
+        "short_description": "회랑, 정원, 부티크가 이어지는 우아한 파리 산책지",
+        "full_description": "오페라와 루브르 사이에서 쇼핑 분위기와 조용한 정원 산책을 함께 느끼기 좋은 클래식 코스입니다.",
+        "history": "왕실 궁전과 정원을 바탕으로 형성된 공간으로, 오늘날에는 회랑과 부티크, 미술적인 기둥 광장으로 사랑받습니다.",
+        "photo_spot_tips": ["다니엘 뷔랑 기둥", "정원 회랑", "부티크 앞 골목"],
+        "estimated_visit_duration": "1-2시간",
+        "admission_fee": "무료",
+        "location": "8 Rue de Montpensier, 75001 Paris",
+        "tags": ["landmark", "garden", "shopping", "walk", "classic", "local"],
+        "popularity": 81,
+    },
+    {
         "slug": "palais-garnier",
         "name": "오페라 가르니에",
         "category": "landmark",
@@ -216,6 +232,23 @@ FEATURED_PLACES: list[dict[str, Any]] = [
         "location": "Seine river banks, Paris",
         "tags": ["walk", "night_view", "romantic"],
         "popularity": 90,
+    },
+    {
+        "slug": "caveau-de-la-huchette",
+        "name": "르 카보 드 라 위셰트",
+        "category": "bar",
+        "coordinates": {"lat": 48.8528, "lng": 2.3458},
+        "image_url": "/images/paris-default-hero.jpeg",
+        "short_description": "라탱 지구의 오래된 재즈 클럽",
+        "full_description": "늦은 저녁 파리의 음악적인 분위기로 하루를 닫기 좋은 클래식 재즈바입니다.",
+        "history": "1940년대부터 라이브 재즈와 스윙 공연으로 알려진 파리의 대표적인 재즈 클럽입니다.",
+        "photo_spot_tips": ["입구 간판", "공연 전 골목 분위기", "라탱 지구 야간 산책"],
+        "estimated_visit_duration": "1-2시간",
+        "admission_fee": "공연별 커버 차지 확인 필요",
+        "location": "5 Rue de la Huchette, 75005 Paris",
+        "tags": ["bar", "jazz", "music", "nightlife", "local", "romantic"],
+        "cuisine": ["jazz_bar", "wine"],
+        "popularity": 82,
     },
 ]
 
@@ -276,6 +309,8 @@ THEME_CATEGORY_WEIGHTS = {
     "cafe": {"cafe": 4.0, "neighborhood": 2.0},
     "foodie": {"cafe": 3.0, "neighborhood": 1.5},
     "night_view": {"landmark": 3.5, "neighborhood": 2.0},
+    "nightlife": {"bar": 4.0, "restaurant": 1.5, "neighborhood": 1.0},
+    "jazz": {"bar": 4.5, "restaurant": 1.0},
     "shopping": {"neighborhood": 3.5, "cafe": 1.5},
     "nature": {"park": 4.0, "landmark": 1.0},
     "landmark": {"landmark": 4.0},
@@ -293,14 +328,34 @@ RAW_ALIASES = {
     "노트르담": "notre-dame",
     "몽마르트": "montmartre",
     "몽마르트르": "montmartre",
+    "사크레쾨르": "montmartre",
+    "사크레쾨르성당": "montmartre",
+    "sacrecoeur": "montmartre",
+    "sacrecoeurbasilica": "montmartre",
     "개선문": "arc-de-triomphe",
     "샹젤리제": "champs-elysees",
     "생트샤펠": "sainte-chapelle",
+    "생트샤펠성당": "sainte-chapelle",
     "마레": "marais",
     "튈르리": "tuileries-garden",
+    "튈르리정원": "tuileries-garden",
     "오페라": "palais-garnier",
+    "오페라가르니에": "palais-garnier",
+    "팔레가르니에": "palais-garnier",
+    "가르니에": "palais-garnier",
+    "팔레루아얄": "palais-royal",
+    "팔레 루아얄": "palais-royal",
     "센강": "seine-river-walk",
+    "센강산책": "seine-river-walk",
+    "세느강": "seine-river-walk",
+    "세느강산책": "seine-river-walk",
     "뤽상부르": "luxembourg-gardens",
+    "뤽상부르공원": "luxembourg-gardens",
+    "룩셈부르크": "luxembourg-gardens",
+    "룩셈부르크공원": "luxembourg-gardens",
+    "재즈바": "caveau-de-la-huchette",
+    "재즈": "caveau-de-la-huchette",
+    "위셰트": "caveau-de-la-huchette",
     "luxembourg": "luxembourg-gardens",
     "louvre": "louvre-museum",
     "orsay": "musee-dorsay",
@@ -315,6 +370,12 @@ RAW_ALIASES = {
     "saintchapelle": "sainte-chapelle",
     "notredame": "notre-dame",
     "marais": "marais",
+    "palaisgarnier": "palais-garnier",
+    "operagarnier": "palais-garnier",
+    "palaisroyal": "palais-royal",
+    "jazzbar": "caveau-de-la-huchette",
+    "caveaudelahuchette": "caveau-de-la-huchette",
+    "huchette": "caveau-de-la-huchette",
 }
 
 
@@ -611,6 +672,10 @@ def _score_place(
             score += 2.5
     if place["slug"] in FEATURED_BY_SLUG:
         score += 4.0
+    if "budget" in {normalize_text(theme) for theme in themes} or "save" in {normalize_text(theme) for theme in themes}:
+        admission = _admission_fee_amount(place) or 0
+        if admission > 0:
+            score -= min(5.0, admission / 8.0)
     if anchor is not None:
         distance = _distance_km(place["coordinates"], anchor["coordinates"])
         score += max(0.0, 4.0 - distance)
@@ -978,7 +1043,9 @@ def _itinerary_profile(create_plan_payload: dict[str, Any]) -> dict[str, Any]:
         "local": bool(theme_set.intersection({"local", "walk", "romantic", "cafe"})),
         "foodie": bool(meal_preferences or theme_set.intersection({"foodie", "cafe"})),
         "prefers_cafe_dessert": bool(theme_set.intersection({"cafe", "foodie", "dessert"})) or bool(meal_preference_set.intersection({"cafe", "dessert", "coffee", "bakery"})),
+        "prefers_brunch": bool(meal_preference_set.intersection({"brunch", "breakfast"})),
         "prefers_french_dinner": bool(meal_preference_set.intersection({"french", "bistro", "brasserie", "romantic"})),
+        "prefers_late_bar": bool(theme_set.intersection({"jazz", "nightlife"})) or bool(meal_preference_set.intersection({"jazz", "jazz_bar", "wine", "bar"})),
         "transport": str(brief.get("transport_preference") or mobility.get("travel_mode") or "both"),
         "budget_mode": str((brief.get("budget_range") or {}).get("budget_mode") or budget.get("budget_mode") or "normal"),
         "travelers": max(1, adults + children),
@@ -989,53 +1056,83 @@ def _itinerary_profile(create_plan_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_EIFFEL_LOCK_ALIASES = ("eiffel", "eiffeltower", "toureiffel", "\uc5d0\ud3a0", "\uc5d0\ud3a0\ud0d1")
+_SEINE_LOCK_ALIASES = ("seine", "seineriver", "\uc13c\uac15")
+_ARC_LOCK_ALIASES = ("arc", "arcdetriomphe", "\uac1c\uc120\ubb38")
+_JAZZ_LOCK_ALIASES = ("jazz", "jazzbar", "caveaudelahuchette", "huchette", "\uc7ac\uc988", "\uc7ac\uc988\ubc14", "\uc704\uc158\ud2b8")
+_NIGHT_LOCK_CUES = ("night", "nightview", "night_view", "sparkling", "\uc57c\uacbd", "\ubc24", "\uc57c\uac04")
+_SUNSET_LOCK_CUES = ("sunset", "\uc11d\uc591", "\uc120\uc14b", "\ub178\uc744", "\ud574\uc9c8\ub158")
+_FINAL_LOCK_CUES = ("finish", "final", "end", "\ub9c8\ubb34\ub9ac", "\ub9c8\uc9c0\ub9c9", "\ub05d")
+
+
+def _compact_lock_source(value: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z\uac00-\ud7a3]+", "", str(value or "")).lower()
+
+
+def _has_lock_cue(source_text: str, aliases: tuple[str, ...], cues: tuple[str, ...], *, before: int = 12, after: int = 22) -> bool:
+    text = _compact_lock_source(source_text)
+    if not text:
+        return False
+    cue_values = [_compact_lock_source(cue) for cue in cues if _compact_lock_source(cue)]
+    for alias in aliases:
+        alias_value = _compact_lock_source(alias)
+        if not alias_value:
+            continue
+        start = text.find(alias_value)
+        if start < 0:
+            continue
+        window = text[max(0, start - before) : start + len(alias_value) + after]
+        if any(cue in window for cue in cue_values):
+            return True
+    return False
+
+
+def _locked_stop(entity: str, slug: str, target_slot: str, label: str) -> dict[str, Any]:
+    return {
+        "entity": entity,
+        "slug": slug,
+        "modifier": "night_view",
+        "target_slot": target_slot,
+        "locked": True,
+        "preferred_day": 1,
+        "label": label,
+    }
+
+
 def _derive_locked_stops(*, brief: dict[str, Any], must_include_names: list[str], night_view_required: bool) -> list[dict[str, Any]]:
     explicit_locks = brief.get("locked_stops")
     if isinstance(explicit_locks, list) and explicit_locks:
         return [dict(lock) for lock in explicit_locks if isinstance(lock, dict)]
 
-    if not night_view_required:
+    has_late_bar_request = any(_lockable_slug_for_name(name) == "caveau-de-la-huchette" for name in must_include_names)
+    has_seine_request = any(_lockable_slug_for_name(name) == "seine-river-walk" for name in must_include_names)
+    if not night_view_required and not has_late_bar_request and not has_seine_request:
         return []
 
+    source_text = str(brief.get("source_text") or "").strip()
+    has_source_text = bool(source_text)
     locks: list[dict[str, Any]] = []
     for name in must_include_names:
         slug = _lockable_slug_for_name(name)
         if slug == "eiffel-tower":
-            locks.append(
-                {
-                    "entity": "eiffel_tower",
-                    "slug": slug,
-                    "modifier": "night_view",
-                    "target_slot": "evening",
-                    "locked": True,
-                    "preferred_day": 1,
-                    "label": "에펠탑 야경",
-                }
-            )
+            if has_source_text and not _has_lock_cue(source_text, _EIFFEL_LOCK_ALIASES, _NIGHT_LOCK_CUES):
+                continue
+            locks.append(_locked_stop("eiffel_tower", slug, "evening", "에펠탑 야경"))
         elif slug == "seine-river-walk":
-            locks.append(
-                {
-                    "entity": "seine_river",
-                    "slug": slug,
-                    "modifier": "night_view",
-                    "target_slot": "night",
-                    "locked": True,
-                    "preferred_day": 1,
-                    "label": "센강 야간 산책",
-                }
-            )
+            has_sunset = _has_lock_cue(source_text, _SEINE_LOCK_ALIASES, _SUNSET_LOCK_CUES)
+            has_night = _has_lock_cue(source_text, _SEINE_LOCK_ALIASES, _NIGHT_LOCK_CUES)
+            has_final = _has_lock_cue(source_text, _SEINE_LOCK_ALIASES, _FINAL_LOCK_CUES, before=4, after=28)
+            target_slot = "night" if has_night and not has_sunset else "evening" if (has_sunset or has_night or has_final) else "afternoon"
+            label = "센강 석양 산책" if has_sunset else "센강 야간 산책" if target_slot in {"evening", "night"} else "센강 산책"
+            locks.append(_locked_stop("seine_river", slug, target_slot, label))
         elif slug == "arc-de-triomphe":
-            locks.append(
-                {
-                    "entity": "arc_de_triomphe",
-                    "slug": slug,
-                    "modifier": "night_view",
-                    "target_slot": "evening",
-                    "locked": True,
-                    "preferred_day": 1,
-                    "label": "개선문 야경",
-                }
-            )
+            has_night = _has_lock_cue(source_text, _ARC_LOCK_ALIASES, _NIGHT_LOCK_CUES)
+            has_final = _has_lock_cue(source_text, _ARC_LOCK_ALIASES, _FINAL_LOCK_CUES, before=4, after=28)
+            if has_source_text and not (has_night or has_final):
+                continue
+            locks.append(_locked_stop("arc_de_triomphe", slug, "night" if has_final else "evening", "개선문 야경"))
+        elif slug == "caveau-de-la-huchette":
+            locks.append(_locked_stop("jazz_bar", slug, "night", "재즈바"))
     return locks
 
 
@@ -1043,7 +1140,7 @@ def _lockable_slug_for_name(value: str) -> str | None:
     resolved = resolve_place(value)
     if resolved is not None:
         slug = str(resolved.get("slug") or "")
-        if slug in {"eiffel-tower", "seine-river-walk", "arc-de-triomphe", "louvre-museum"}:
+        if slug in {"eiffel-tower", "seine-river-walk", "arc-de-triomphe", "louvre-museum", "caveau-de-la-huchette"}:
             return slug
     normalized = normalize_text(value)
     if normalized and ("eiffel" in normalized or "에펠" in value):
@@ -1054,6 +1151,8 @@ def _lockable_slug_for_name(value: str) -> str | None:
         return "arc-de-triomphe"
     if normalized and ("louvre" in normalized or "루브르" in value):
         return "louvre-museum"
+    if normalized and any(alias in normalized for alias in _JAZZ_LOCK_ALIASES):
+        return "caveau-de-la-huchette"
     return None
 
 
@@ -1075,6 +1174,8 @@ def _select_blueprint_archetype(day_index: int, total_days: int, profile: dict[s
     if profile.get("museum") and not has_eiffel_night_lock and (day_index == 1 or (day_index == 0 and not profile.get("night_view"))):
         return "museum_focused_day"
     if profile.get("night_view") and profile.get("prefers_french_dinner"):
+        return "romantic_evening_day"
+    if profile.get("prefers_late_bar") or (profile.get("prefers_french_dinner") and wants_evening_first):
         return "romantic_evening_day"
     if profile.get("slow") and profile.get("prefers_cafe_dessert"):
         return "slow_cafe_day" if not wants_evening_first else "romantic_evening_day"
@@ -1099,7 +1200,7 @@ def _day_blueprint(day_index: int, total_days: int, profile: dict[str, Any]) -> 
     slow = bool(profile.get("slow"))
     wants_night = bool(profile.get("night_view"))
     wants_museum = bool(profile.get("museum"))
-    meal_categories = {"restaurant", "cafe", "bakery", "bistro", "brasserie", "bar"}
+    meal_categories = {"restaurant", "cafe", "bakery", "bistro", "brasserie"}
     archetype = _select_blueprint_archetype(day_index, total_days, profile)
 
     def stop_spec(
@@ -1131,30 +1232,39 @@ def _day_blueprint(day_index: int, total_days: int, profile: dict[str, Any]) -> 
 
     def meal_spec(slot: str, start_time: str, extra_tags: set[str] | None = None) -> dict[str, Any]:
         tags = set(extra_tags or set())
-        tags.update(meal_tags)
+        categories = set(meal_categories)
         if slot == "lunch":
-            tags.update({"brunch"} if slow else {"french"})
+            tags.update(meal_tags.intersection({"brunch", "breakfast", "cafe", "coffee", "bakery", "dessert"}))
+            tags.update({"brunch"} if (slow or profile.get("prefers_brunch")) else {"french"})
+            if profile.get("prefers_cafe_dessert") or tags.intersection({"brunch", "cafe", "coffee", "bakery", "dessert"}):
+                categories = {"cafe", "bakery"}
         else:
+            tags.update(meal_tags.intersection({"french", "bistro", "brasserie", "romantic"}))
             tags.update({"french", "romantic"} if wants_night or profile.get("prefers_french_dinner") else {"french"})
         return {
             "slot": slot,
             "start_time": start_time,
             "meal": True,
-            "categories": meal_categories,
+            "categories": categories,
             "tags": sorted(tags),
             "prefer_featured": False,
         }
     evening_lock = _lock_for_slot(profile, "evening", day_index) or _lock_for_slot(profile, "night", day_index)
+    late_bar_spec = stop_spec("evening", "21:20", {"bar"}, {"jazz", "music", "nightlife", "romantic"}, prefer_featured=False) if profile.get("prefers_late_bar") else None
 
     if archetype == "slow_cafe_evening_day":
         slots = [
-            stop_spec("afternoon", "11:15", {"cafe", "bakery", "neighborhood"}, {"brunch", "coffee", "dessert", "local"}, prefer_featured=False),
+            stop_spec("afternoon", "11:15", {"cafe", "bakery"}, {"brunch", "coffee", "dessert", "local"}, prefer_featured=False),
             meal_spec("lunch", "13:00", {"bakery", "coffee", "dessert"}),
             stop_spec("afternoon", "15:00", {"park", "landmark"}, {"walk", "romantic", "photo", "scenic"}, prefer_featured=False),
-            stop_spec("afternoon", "16:35", {"cafe", "bakery", "neighborhood"}, {"dessert", "coffee", "relax", "romantic"}, prefer_featured=False),
+            stop_spec("afternoon", "16:35", {"cafe", "bakery"}, {"dessert", "coffee", "relax", "romantic"}, prefer_featured=False),
             meal_spec("evening", "18:35", {"french", "romantic"}),
             stop_spec("evening", "20:25", {"landmark", "neighborhood"}, {"night_view", "romantic", "walk", "classic"}, locked_stop=evening_lock),
         ]
+        if late_bar_spec:
+            slots[-1] = late_bar_spec if not wants_night else slots[-1]
+            if wants_night:
+                slots.append(late_bar_spec)
         return {
             "archetype": archetype,
             "theme": "파리 첫날, 센강과 에펠탑 야경에 천천히 스며드는 하루" if day_index == 0 else "센강과 에펠탑 야경에 천천히 스며드는 하루",
@@ -1180,14 +1290,31 @@ def _day_blueprint(day_index: int, total_days: int, profile: dict[str, Any]) -> 
         }
 
     if archetype == "romantic_evening_day":
-        slots = [
-            stop_spec("morning", "10:15", {"neighborhood", "landmark", "cathedral"}, {"walk", "romantic", "history"}, prefer_featured=False),
-            stop_spec("afternoon", "12:00", {"cafe", "bakery", "neighborhood"}, {"coffee", "dessert", "local"}, prefer_featured=False),
-            meal_spec("lunch", "13:30", {"coffee", "bakery"} if profile.get("prefers_cafe_dessert") else {"french"}),
-            stop_spec("afternoon", "15:30", {"park", "neighborhood", "landmark"}, {"walk", "romantic", "photo", "scenic"}, prefer_featured=False),
-            meal_spec("evening", "18:35", {"french", "romantic"}),
-            stop_spec("evening", "20:20", {"landmark", "neighborhood"}, {"night_view", "romantic", "walk", "classic"}, locked_stop=evening_lock),
-        ]
+        if profile.get("prefers_brunch"):
+            slots = [
+                meal_spec("lunch", "11:15", {"brunch", "coffee", "bakery"}),
+                stop_spec("afternoon", "12:50", {"neighborhood", "cathedral", "landmark"}, {"walk", "local", "romantic", "history"}, prefer_featured=False),
+                stop_spec("afternoon", "15:15", {"cafe", "bakery", "neighborhood"}, {"coffee", "dessert", "local"}, prefer_featured=False),
+                meal_spec("evening", "18:35", {"french", "romantic"}),
+            ]
+            if wants_night:
+                slots.append(stop_spec("evening", "20:20", {"landmark", "neighborhood"}, {"night_view", "romantic", "walk", "classic"}, locked_stop=evening_lock))
+        else:
+            slots = [
+                stop_spec("morning", "10:15", {"neighborhood", "landmark", "cathedral"}, {"walk", "romantic", "history"}, prefer_featured=False),
+                stop_spec("afternoon", "12:00", {"cafe", "bakery", "neighborhood"}, {"coffee", "dessert", "local"}, prefer_featured=False),
+                meal_spec("lunch", "13:30", {"coffee", "bakery"} if profile.get("prefers_cafe_dessert") else {"french"}),
+                stop_spec("afternoon", "15:30", {"park", "neighborhood", "landmark"}, {"walk", "romantic", "photo", "scenic"}, prefer_featured=False),
+                meal_spec("evening", "18:35", {"french", "romantic"}),
+                stop_spec("evening", "20:20", {"landmark", "neighborhood"}, {"night_view", "romantic", "walk", "classic"}, locked_stop=evening_lock),
+            ]
+        if late_bar_spec:
+            if profile.get("prefers_brunch"):
+                slots.append(late_bar_spec)
+            elif wants_night:
+                slots.append(late_bar_spec)
+            else:
+                slots[-1] = late_bar_spec
         return {
             "archetype": archetype,
             "theme": "저녁 식사와 야경으로 감정을 끌어올리는 로맨틱한 하루",
@@ -1229,7 +1356,7 @@ def _day_blueprint(day_index: int, total_days: int, profile: dict[str, Any]) -> 
         )
         slots = [
             stop_spec("morning", "10:00", {"neighborhood", "landmark", "cathedral"}, {"local", "walk", "romantic", "history"}, prefer_featured=False),
-            stop_spec("morning", "11:30", {"cafe", "bakery", "neighborhood"}, {"coffee", "bakery", "dessert", "local"}, prefer_featured=False),
+            stop_spec("morning", "11:30", {"cafe", "bakery"}, {"coffee", "bakery", "dessert", "local"}, prefer_featured=False),
             meal_spec("lunch", "13:05", {"coffee", "bakery"} if profile.get("prefers_cafe_dessert") else {"french"}),
             stop_spec("afternoon", "15:10", {"neighborhood", "park", "cafe"}, {"local", "walk", "cafe", "romantic"}, prefer_featured=False),
         ]
@@ -1240,6 +1367,8 @@ def _day_blueprint(day_index: int, total_days: int, profile: dict[str, Any]) -> 
                     stop_spec("evening", "20:15", {"landmark", "neighborhood"}, {"night_view", "romantic", "walk"}, locked_stop=evening_lock),
                 ]
             )
+        elif late_bar_spec:
+            slots.extend([meal_spec("evening", "18:35", {"romantic", "french"}), late_bar_spec])
         return {
             "archetype": archetype,
             "theme": late_theme,
@@ -1261,6 +1390,8 @@ def _day_blueprint(day_index: int, total_days: int, profile: dict[str, Any]) -> 
                 stop_spec("evening", "20:10", {"landmark", "neighborhood"}, {"night_view", "classic", "walk"}, locked_stop=evening_lock),
             ]
         )
+    elif late_bar_spec:
+        slots.extend([meal_spec("evening", "18:25", {"french", "romantic"}), late_bar_spec])
     else:
         slots.append(stop_spec("evening", "18:35", {"neighborhood", "cafe", "landmark"}, {"cafe", "walk", "classic"}, prefer_featured=False))
     return {
@@ -1385,9 +1516,10 @@ def _slot_candidate_score(
             score += 3.2
         elif place.get("category") in {"bakery", "bistro", "brasserie", "bar"}:
             score += 3.6
-        if profile.get("meal_preference_set") and (
-            profile["meal_preference_set"].intersection(place_tags)
-            or any(_matches_cuisine(place, token) for token in profile.get("meal_preferences") or [])
+        meal_spec_tokens = set(profile.get("meal_preference_set") or set()).intersection(spec_tags)
+        if meal_spec_tokens and (
+            meal_spec_tokens.intersection(place_tags)
+            or any(_matches_cuisine(place, token) for token in meal_spec_tokens)
         ):
             score += 4.5
     if slot == "morning" and spec_tags.intersection({"brunch", "coffee", "bakery"}):
@@ -1413,6 +1545,12 @@ def _slot_candidate_score(
             score += 3.0
     if profile.get("slow") and place.get("category") in {"park", "neighborhood", "cafe"} and slot in {"afternoon", "evening"}:
         score += 2.8
+    if profile.get("budget_mode") == "save":
+        admission = _admission_fee_amount(place) or 0
+        if admission > 0:
+            score -= min(7.0, admission / 6.0)
+        if place.get("category") in {"park", "neighborhood"} or "walk" in place_tags:
+            score += 2.4
     if profile.get("museum") and place.get("category") == "museum" and slot == "morning":
         score += 3.1
     if profile.get("local") and place.get("source") == "osm" and place.get("category") in {"restaurant", "cafe"}:
@@ -1534,7 +1672,7 @@ def _should_reserve_night_sensitive_place(
     slot: str,
     spec: dict[str, Any],
 ) -> bool:
-    if slot in {"evening", "night"} or spec.get("meal"):
+    if slot in {"evening", "night"}:
         return False
     locked_stops = [lock for lock in profile.get("locked_stops") or [] if bool(lock.get("locked"))]
     if not locked_stops:
@@ -1544,6 +1682,140 @@ def _should_reserve_night_sensitive_place(
         str(lock.get("target_slot") or "") in {"evening", "night"} and str(lock.get("slug") or "") == place_slug
         for lock in locked_stops
     )
+
+
+def _force_remaining_must_includes(
+    *,
+    must_include_pool: list[dict[str, Any]],
+    profile: dict[str, Any],
+    used_slugs: set[str],
+    used_names: set[str],
+    used_coordinates: set[str],
+) -> list[dict[str, Any]]:
+    forced: list[dict[str, Any]] = []
+    avoid_set = set(profile.get("must_avoid") or set())
+    locked_by_slug = {
+        str(lock.get("slug") or ""): dict(lock)
+        for lock in profile.get("locked_stops") or []
+        if bool(lock.get("locked")) and str(lock.get("slug") or "").strip()
+    }
+    remaining: list[dict[str, Any]] = []
+    for place in must_include_pool:
+        normalized_name = normalize_text(str(place.get("name") or ""))
+        normalized_slug = normalize_text(str(place.get("slug") or place.get("place_id") or ""))
+        if normalized_name in avoid_set or normalized_slug in avoid_set:
+            continue
+        if _is_place_used(place, used_slugs=used_slugs, used_names=used_names, used_coordinates=used_coordinates):
+            continue
+        remaining.append(place)
+
+    for offset, place in enumerate(remaining):
+        place_tags = _place_theme_tags(place)
+        category = str(place.get("category") or "")
+        place_slug = str(place.get("slug") or place.get("place_id") or "")
+        locked_stop = locked_by_slug.get(place_slug)
+        locked_target_slot = str((locked_stop or {}).get("target_slot") or "")
+        preferred_slots = set(profile.get("preferred_slot_set") or set())
+        if locked_target_slot in {"evening", "night"}:
+            slot = "evening"
+            start_time = "20:15" if locked_target_slot == "night" else "18:50"
+        elif category in {"cathedral", "museum"}:
+            slot = "morning"
+            start_time = f"{9 + min(offset, 2)}:45"
+        elif category == "park" and ("afternoon" in preferred_slots or profile.get("budget_mode") == "save"):
+            slot = "afternoon"
+            start_time = "15:10"
+        else:
+            slot = "afternoon"
+            start_time = f"{15 + min(offset, 2)}:10"
+        forced.append(
+            {
+                "place": place,
+                "spec": {
+                    "slot": slot,
+                    "start_time": start_time,
+                    "categories": {str(place.get("category") or "landmark")},
+                    "tags": sorted(place_tags.union({"must_include"})),
+                    "prefer_featured": True,
+                    "forced_must_include": True,
+                },
+            }
+        )
+        _mark_place_used(
+            place,
+            used_slugs=used_slugs,
+            used_names=used_names,
+            used_coordinates=used_coordinates,
+        )
+    must_include_pool[:] = []
+    return forced
+
+
+def _selection_start_minutes(selection: dict[str, Any]) -> int:
+    raw = str((selection.get("spec") or {}).get("start_time") or "")
+    try:
+        hour, minute = raw.split(":", 1)
+        return int(hour) * 60 + int(minute)
+    except (ValueError, TypeError):
+        slot = str((selection.get("spec") or {}).get("slot") or "")
+        return {"morning": 9 * 60, "lunch": 12 * 60 + 30, "afternoon": 15 * 60, "evening": 18 * 60 + 30}.get(slot, 15 * 60)
+
+
+def _sort_selections_by_time(selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(selections, key=_selection_start_minutes)
+
+
+def _compact_selections_for_constraints(selections: list[dict[str, Any]], profile: dict[str, Any]) -> list[dict[str, Any]]:
+    hard_slugs = {
+        str(place.get("slug") or "")
+        for place in (resolve_place(name) for name in profile.get("must_include_names") or [])
+        if place is not None
+    }
+    meal_preferences = {str(value).lower() for value in profile.get("meal_preferences") or []}
+    needs_evening_meal = bool(meal_preferences.intersection({"french", "bistro", "brasserie", "romantic"}))
+    needs_cafe = bool(meal_preferences.intersection({"cafe", "coffee", "brunch", "dessert", "bakery"})) or bool(profile.get("prefers_cafe_dessert"))
+    has_unneeded_evening_meal = any(
+        bool((selection.get("spec") or {}).get("meal"))
+        and str((selection.get("spec") or {}).get("slot") or "") == "evening"
+        and not needs_evening_meal
+        for selection in selections
+    )
+    target_count = 5 if len(selections) <= 6 and len(hard_slugs) >= 2 and has_unneeded_evening_meal else 6
+    if len(selections) <= target_count:
+        return selections
+
+    compacted = list(selections)
+    while len(compacted) > target_count:
+        removable: list[tuple[int, int]] = []
+        for index, selection in enumerate(compacted):
+            place = selection.get("place") or {}
+            spec = selection.get("spec") or {}
+            slug = str(place.get("slug") or place.get("place_id") or "")
+            if slug in hard_slugs or spec.get("forced_must_include") or spec.get("locked_slug"):
+                continue
+
+            category = str(place.get("category") or "")
+            slot = str(spec.get("slot") or "")
+            is_meal = bool(spec.get("meal"))
+            score = 10
+            if is_meal and slot == "evening" and not needs_evening_meal:
+                score = 100
+            elif not is_meal and slot in {"evening", "night"} and not profile.get("night_view"):
+                score = 90
+            elif not is_meal and category in {"landmark", "neighborhood"}:
+                score = 80
+            elif is_meal and not meal_preferences:
+                score = 70
+            elif category in {"cafe", "bakery"} and not needs_cafe:
+                score = 60
+            elif category in {"park", "garden"} and not profile.get("slow") and not profile.get("budget_mode") == "save":
+                score = 40
+            removable.append((score, index))
+        if not removable:
+            break
+        _, remove_index = max(removable)
+        compacted.pop(remove_index)
+    return compacted
 
 
 def _is_night_sensitive_place(place: dict[str, Any]) -> bool:
@@ -1587,6 +1859,16 @@ def build_itinerary(create_plan_payload: dict[str, Any]) -> dict[str, Any]:
             used_names=used_names,
             used_coordinates=used_coordinates,
         )
+        selections.extend(
+            _force_remaining_must_includes(
+                must_include_pool=must_include_pool,
+                profile=profile,
+                used_slugs=used_slugs,
+                used_names=used_names,
+                used_coordinates=used_coordinates,
+            )
+        )
+        selections = _compact_selections_for_constraints(_sort_selections_by_time(selections), profile)
         items: list[dict[str, Any]] = []
         for index, selection in enumerate(selections, start=1):
             place = selection["place"]
@@ -1605,6 +1887,8 @@ def build_itinerary(create_plan_payload: dict[str, Any]) -> dict[str, Any]:
                     slot=str(spec.get("slot") or "afternoon"),
                     item_index=index,
                     start_time=str(spec.get("start_time") or ""),
+                    slot_tags=list(spec.get("tags") or []),
+                    is_meal=bool(spec.get("meal")),
                     story_fields=_item_story_fields(place, spec=spec, blueprint=blueprint, profile=profile),
                 )
             )
@@ -1664,6 +1948,8 @@ def _build_itinerary_item_from_place(
     slot: str,
     item_index: int,
     start_time: str | None = None,
+    slot_tags: list[str] | None = None,
+    is_meal: bool = False,
     story_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_slot = {"dinner": "evening", "night": "evening"}.get(slot, slot)
@@ -1687,6 +1973,8 @@ def _build_itinerary_item_from_place(
             "admission_fee": _admission_fee_label(place),
             "admission_fee_amount": _admission_fee_amount(place),
         },
+        "slotTags": list(slot_tags or []),
+        "isMeal": is_meal,
         "description": place["short_description"],
         "estimated_duration": place["estimated_visit_duration"],
         "area": _area_label(place),

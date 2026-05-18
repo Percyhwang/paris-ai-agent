@@ -1,3 +1,5 @@
+import re
+
 import requests
 
 from app.core.config import settings
@@ -20,7 +22,10 @@ IATA_MAP: dict[str, str] = {
 
 
 def city_to_iata(city: str) -> str | None:
-    return IATA_MAP.get(city) or IATA_MAP.get(city.lower())
+    value = (city or "").strip()
+    if re.fullmatch(r"[A-Za-z]{3}", value):
+        return value.upper()
+    return IATA_MAP.get(value) or IATA_MAP.get(value.lower())
 
 
 def _headers() -> dict:

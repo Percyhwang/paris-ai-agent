@@ -15,8 +15,10 @@ const MODAL_COPY = {
     about: "장소 소개",
     tips: "방문 팁",
     duration: "소요 시간",
-    admissionFallback: "입장 정보는 현장 또는 공식 사이트에서 확인해 주세요.",
+    admissionFallback: "최신 입장 정보는 현장 또는 공식 사이트에서 확인해 주세요",
     addToPlan: "내 여행 계획에 추가",
+    emptyHistory: "파리 일정 흐름에 자연스럽게 넣기 좋은 장소입니다.",
+    emptyTip: "방문 전 최근 사진과 혼잡도를 확인하면 더 좋은 시간대를 고르기 쉽습니다.",
   },
   en: {
     close: "Close",
@@ -25,6 +27,8 @@ const MODAL_COPY = {
     duration: "Suggested Visit",
     admissionFallback: "Check the venue or official site for current admission details",
     addToPlan: "Add to My Trip Plan",
+    emptyHistory: "This is a useful Paris stop to weave into a travel route.",
+    emptyTip: "Check recent photos and crowd levels before visiting.",
   },
 } as const;
 
@@ -34,6 +38,9 @@ export function PlaceDetailModal({ place, onClose, onAddToPlan }: PlaceDetailMod
 
   if (!place) return null;
 
+  const tips = place.photo_spot_tips?.length ? place.photo_spot_tips : [copy.emptyTip];
+  const imageUrl = place.image_url || "/images/paris-default-hero.jpeg";
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <section className="place-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
@@ -41,7 +48,14 @@ export function PlaceDetailModal({ place, onClose, onAddToPlan }: PlaceDetailMod
           ×
         </button>
         <div className="modal-image-frame">
-          <img className="modal-hero" src={place.image_url} alt={place.name} />
+          <img
+            className="modal-hero"
+            src={imageUrl}
+            alt={place.name}
+            onError={(event) => {
+              event.currentTarget.src = "/images/paris-default-hero.jpeg";
+            }}
+          />
         </div>
         <div className="modal-content">
           <span className="category-pill">{getPlaceCategoryLabel(place.category, language)}</span>
@@ -50,12 +64,12 @@ export function PlaceDetailModal({ place, onClose, onAddToPlan }: PlaceDetailMod
           <div className="detail-grid">
             <div>
               <h4>{copy.about}</h4>
-              <p>{place.history}</p>
+              <p>{place.history || copy.emptyHistory}</p>
             </div>
             <div>
               <h4>{copy.tips}</h4>
               <ul>
-                {place.photo_spot_tips.map((tip) => (
+                {tips.map((tip) => (
                   <li key={tip}>{tip}</li>
                 ))}
               </ul>

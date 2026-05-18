@@ -28,6 +28,8 @@ class PlanningBriefPayload(BaseModel):
     budget_range: dict[str, Any] = Field(default_factory=dict)
     hotel_area_preference: str | None = None
     transport_preference: str = "both"
+    walking_intensity: str | None = None
+    mobility_constraints: dict[str, Any] = Field(default_factory=dict)
     start_time: str | None = None
     end_time: str | None = None
     hard_constraints: list[ConstraintSpec] = Field(default_factory=list)
@@ -36,3 +38,4 @@ class PlanningBriefPayload(BaseModel):
     locked_stops: list[dict[str, Any]] = Field(default_factory=list)
     preferred_blueprints: list[str] = Field(default_factory=list)
     quality_focus: str | None = None
+    source_text: str | None = None

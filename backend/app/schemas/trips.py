@@ -36,10 +36,13 @@ class TripUpdate(BaseModel):
 
 class ItineraryPlace(BaseModel):
     place_id: str | None = None
+    slug: str | None = None
     name: str
     coordinates: Coordinates | None = None
     category: str | None = None
+    tags: list[str] | None = None
     cuisine: list[str] | str | None = None
+    source: str | None = None
     admission_fee: str | None = None
     admission_fee_amount: float | None = None
     rating: float | None = None
@@ -136,7 +139,30 @@ class TripResponse(BaseModel):
     style_tags: list[str] = Field(default_factory=list)
     status: str = "draft"
     planning_brief: dict[str, Any] | None = None
+    user_intent_analysis: dict[str, Any] | None = None
+    memory_context: dict[str, Any] | None = None
     constraint_validation: dict[str, Any] | None = None
+    agent_evaluation: dict[str, Any] | None = None
+    agent_warnings: list[str] = Field(default_factory=list)
+    agent_explanation: dict[str, Any] | None = None
+    agent_trace: dict[str, Any] | None = None
+    agent_reflection_feedback: list[str] = Field(default_factory=list)
+    agent_replanner_context: dict[str, Any] | None = None
+    agent_summary: str | None = None
+    understood_constraints: dict[str, Any] = Field(default_factory=dict)
+    repair_summary: dict[str, Any] = Field(default_factory=dict)
+    replan_attempts: int | None = None
+    evaluation_summary: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    memory_used: bool | None = None
+    frontend_display: dict[str, Any] | None = None
+    places: list[dict[str, Any]] = Field(default_factory=list)
+    route_legs: list[dict[str, Any]] = Field(default_factory=list)
+    schedule: list[dict[str, Any]] = Field(default_factory=list)
+    days: list[dict[str, Any]] = Field(default_factory=list)
+    updated_itinerary: list[dict[str, Any]] = Field(default_factory=list)
+    changed_items: list[dict[str, Any]] = Field(default_factory=list)
+    preserved_items: list[dict[str, Any]] = Field(default_factory=list)
     itinerary_days: list[ItineraryDay] = Field(default_factory=list)
     route_summary: str | None = None
     created_at: datetime | str

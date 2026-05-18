@@ -9,7 +9,6 @@ COPY backend/requirements.txt /tmp/backend-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/backend-requirements.txt python-dotenv
 
 COPY backend/app ./app
-COPY backend/tests ./backend/tests
 COPY parser_api ./parser_api
 COPY data_assets ./data_assets
 

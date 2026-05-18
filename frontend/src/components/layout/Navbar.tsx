@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../../store/AuthContext";
 import { useLanguage } from "../../store/LanguageContext";
@@ -35,6 +36,7 @@ export function Navbar() {
   const { language, setLanguage } = useLanguage();
   const navigate = useNavigate();
   const copy = NAV_LABELS[language];
+  const [profileImageFailed, setProfileImageFailed] = useState(false);
 
   const navItems = [
     { to: "/places", label: copy.places },
@@ -51,7 +53,12 @@ export function Navbar() {
     navigate("/");
   }
 
+  useEffect(() => {
+    setProfileImageFailed(false);
+  }, [user?.profile_image]);
+
   const avatarFallback = user?.name?.trim()?.charAt(0)?.toUpperCase() || "P";
+  const shouldShowProfileImage = Boolean(user?.profile_image && !profileImageFailed);
 
   return (
     <nav className="navbar">
@@ -74,7 +81,11 @@ export function Navbar() {
         </div>
         {isAuthenticated && user ? (
           <>
-            {user.profile_image ? <img src={user.profile_image} alt={user.name} /> : <span className="avatar-fallback">{avatarFallback}</span>}
+            {shouldShowProfileImage ? (
+              <img src={user.profile_image ?? ""} alt="" aria-hidden="true" onError={() => setProfileImageFailed(true)} />
+            ) : (
+              <span className="avatar-fallback">{avatarFallback}</span>
+            )}
             <span>{user.name}</span>
             <button type="button" className="ghost-button small" onClick={handleLogout}>
               {copy.logout}

@@ -316,9 +316,15 @@ async def fetch_place_photo_bytes(
     if not google_places_enabled():
         raise HTTPException(status_code=404, detail="Google Places photo API is not configured")
 
+    resolved_photo_name = photo_name
+    if not photo_name.startswith("places/"):
+        resolved_photo_name = await _resolve_photo_name_from_text(photo_name)
+        if not resolved_photo_name:
+            raise HTTPException(status_code=404, detail="Place photo not found")
+
     headers = {"X-Goog-Api-Key": settings.google_places_api_key or ""}
     params = {"maxWidthPx": max_width_px}
-    url = GOOGLE_PLACES_PHOTO_MEDIA_URL.format(photo_name=photo_name)
+    url = GOOGLE_PLACES_PHOTO_MEDIA_URL.format(photo_name=resolved_photo_name)
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         response = await client.get(url, headers=headers, params=params)
 
@@ -326,6 +332,38 @@ async def fetch_place_photo_bytes(
         raise HTTPException(status_code=404, detail="Place photo not found")
 
     return response.content, response.headers.get("content-type", "image/jpeg")
+
+
+async def _resolve_photo_name_from_text(place_name: str) -> str | None:
+    query = place_name.strip()
+    if not query:
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": settings.google_places_api_key or "",
+        "X-Goog-FieldMask": "places.photos",
+    }
+    body = {
+        "textQuery": f"{query} in Paris, France",
+        "pageSize": 1,
+        "languageCode": "en",
+        "regionCode": "FR",
+        "locationBias": PARIS_LOCATION_BIAS,
+    }
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.post(GOOGLE_PLACES_TEXT_SEARCH_URL, json=body, headers=headers)
+
+    if response.is_error:
+        return None
+    places = response.json().get("places") or []
+    if not places:
+        return None
+    photos = places[0].get("photos") or []
+    if not photos:
+        return None
+    photo_name = photos[0].get("name")
+    return photo_name if isinstance(photo_name, str) and photo_name else None
 
 
 def get_default_place_image() -> str:

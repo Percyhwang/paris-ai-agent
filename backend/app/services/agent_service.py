@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -15,15 +17,33 @@ from app.core.config import settings
 from app.db.serializers import serialize_doc, serialize_many
 from app.schemas.trips import TripAgentModifyRequest, TripGenerateRequest
 from app.services.google_places_service import search_google_food_places
+from app.services.agent_orchestrator_service import orchestrate_create_itinerary
+from app.services.memory_retrieval_service import (
+    merge_memory_into_planning_brief,
+    retrieve_memory_context,
+    update_feedback_memory,
+)
+from app.services.place_candidate_service import retrieve_candidate_places
 from app.services.planning_brief_service import (
     build_planning_brief,
     extract_planning_brief,
     mark_constraint_attempt,
     validate_planning_brief_compliance,
 )
+from app.services.plan_evaluator_service import (
+    evaluate_plan,
+    evaluation_signature,
+    public_evaluation,
+    should_replan,
+)
+from app.services.plan_replanner_service import replan_payload
 from app.services.place_repository_service import distance_meters, midpoint
+from app.services.response_composer_service import compose_modify_response
 from app.services.route_optimizer_service import attach_route_legs_to_days, optimize_trip_payload
+from app.services.trip_state_service import save_itinerary_state
 from app.services.trip_service import ensure_trip_ownership, get_trip_detail
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_COORDINATES: dict[str, dict[str, float]] = {
     "Eiffel Tower": {"lat": 48.8584, "lng": 2.2945},
@@ -34,12 +54,15 @@ DEFAULT_COORDINATES: dict[str, dict[str, float]] = {
     "Le Marais": {"lat": 48.8575, "lng": 2.358},
     "Luxembourg Gardens": {"lat": 48.8462, "lng": 2.3372},
     "Seine River": {"lat": 48.8583, "lng": 2.3375},
+    "Palais Garnier": {"lat": 48.8719, "lng": 2.3316},
+    "Palais Royal": {"lat": 48.8635, "lng": 2.3376},
 }
 
 THEME_PLACE_POOL: dict[str, list[str]] = {
     "museum": ["Louvre Museum", "Musee d'Orsay"],
     "cafe": ["Saint-Germain cafe walk", "Le Marais cafe stop"],
     "shopping": ["Le Bon Marche", "Galeries Lafayette"],
+    "luxury": ["Palais Royal", "Palais Garnier"],
     "night_view": ["Eiffel Tower", "Seine River"],
     "park": ["Luxembourg Gardens", "Tuileries Garden"],
 }
@@ -58,18 +81,42 @@ async def generate_trip_payload(
     request: TripGenerateRequest,
     language: str = "ko",
     db: Any | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    return await orchestrate_create_itinerary(
+        request,
+        language=language,
+        db=db,
+        user_id=user_id,
+        execute_create=_generate_trip_payload_core,
+    )
+
+
+async def _generate_trip_payload_core(
+    request: TripGenerateRequest,
+    language: str = "ko",
+    db: Any | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     if settings.external_agent_api_url:
         payload = await _generate_with_external_agent(request, language=language)
-        return await _optimize_payload_if_possible(db, payload, request, language)
+        return await _optimize_payload_if_possible(db, payload, request, language, user_id=user_id)
 
-    local_agent_response = _run_local_agent(request, language=language)
+    logger.info("trip_agent stage=local_agent_start")
+    local_agent_response = await asyncio.to_thread(_run_local_agent, request, language)
     if local_agent_response is not None:
-        payload = _generated_payload_from_agent_response(local_agent_response, request, language=language)
-        return await _optimize_payload_if_possible(db, payload, request, language)
+        logger.info("trip_agent stage=payload_from_agent_response")
+        payload = await asyncio.to_thread(
+            _generated_payload_from_agent_response,
+            local_agent_response,
+            request,
+            language,
+        )
+        return await _optimize_payload_if_possible(db, payload, request, language, user_id=user_id)
 
-    payload = _mock_trip_payload(request, language=language)
-    return await _optimize_payload_if_possible(db, payload, request, language)
+    logger.info("trip_agent stage=fallback_planner")
+    payload = await asyncio.to_thread(_mock_trip_payload, request, language)
+    return await _optimize_payload_if_possible(db, payload, request, language, user_id=user_id)
 
 
 async def modify_trip_with_agent(
@@ -116,6 +163,7 @@ async def modify_trip_with_agent(
         plan=_plan_payload_from_trip(trip),
         trip=trip,
         intent="modify_trip",
+        language=language,
     )
     await attach_route_legs_to_days(
         itinerary_days,
@@ -135,7 +183,23 @@ async def modify_trip_with_agent(
         planning_brief=planning_brief,
         constraint_validation=constraint_validation,
     )
-    return await get_trip_detail(db, user_id, trip_id, language=language)
+    await update_feedback_memory(
+        db,
+        user_id=user_id,
+        trip_id=trip_id,
+        prompt=request.prompt,
+        planning_brief=planning_brief,
+        itinerary_days=itinerary_days,
+        agent_evaluation={"legacy_validation": constraint_validation},
+        source="agent_modify",
+        feedback={"operation": modify_payload.get("operation"), "target_day": modify_payload.get("target_day")},
+    )
+    trip_detail = await get_trip_detail(db, user_id, trip_id, language=language)
+    return compose_modify_response(
+        trip_detail,
+        changed_items=list(derived_state.get("changed_items") or []),
+        preserved_items=list(derived_state.get("preserved_items") or []),
+    )
 
 
 async def _optimize_payload_if_possible(
@@ -143,20 +207,41 @@ async def _optimize_payload_if_possible(
     payload: dict[str, Any],
     request: TripGenerateRequest,
     language: str,
+    *,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
-    planning_brief = extract_planning_brief(payload) or build_planning_brief(
-        plan=dict(payload.get("_plan_source") or {}),
+    plan_source = dict(payload.get("_plan_source") or {})
+    planning_brief = build_planning_brief(
+        plan=plan_source,
         request=request,
         intent="create_trip",
+        language=language,
+    )
+    embedded_brief = extract_planning_brief(payload) or {}
+    for key in ("replan_history", "strict_constraints", "quality_focus"):
+        if embedded_brief.get(key) and key not in planning_brief:
+            planning_brief[key] = embedded_brief[key]
+    memory_context = await retrieve_memory_context(
+        db,
+        user_id=user_id,
+        prompt=request.prompt,
+        planning_brief=planning_brief,
+        user_intent_analysis=planning_brief.get("user_intent_analysis") if isinstance(planning_brief, dict) else None,
+    )
+    planning_brief = merge_memory_into_planning_brief(planning_brief, memory_context)
+    candidate_place_context = await retrieve_candidate_places(
+        db,
+        planning_brief=planning_brief,
     )
     current_payload = dict(payload)
-    current_payload["planning_brief"] = planning_brief
-    current_payload.setdefault("trip", {})["planning_brief"] = planning_brief
-    plan_source = dict(current_payload.get("_plan_source") or {})
+    _attach_planning_context(current_payload, planning_brief, memory_context, candidate_place_context)
     max_replan_attempts = 2
-    seen_violation_signatures: set[tuple[str, ...]] = set()
+    seen_evaluation_signatures: set[tuple[str, ...]] = set()
+    initial_evaluation_score: float | None = None
+    last_evaluation: dict[str, Any] | None = None
 
     for attempt in range(max_replan_attempts + 1):
+        logger.info("trip_agent stage=agent_loop attempt=%s", attempt)
         if db is not None:
             current_payload = await optimize_trip_payload(
                 db,
@@ -165,22 +250,76 @@ async def _optimize_payload_if_possible(
                 language=language,
                 planning_brief=planning_brief,
             )
-        validation = validate_planning_brief_compliance(list(current_payload.get("itinerary_days") or []), planning_brief)
+        evaluation = evaluate_plan(
+            list(current_payload.get("itinerary_days") or []),
+            planning_brief,
+            prompt=request.prompt,
+            language=language,
+        )
+        if initial_evaluation_score is None:
+            try:
+                initial_evaluation_score = float(evaluation.get("score") or 0)
+            except (TypeError, ValueError):
+                initial_evaluation_score = 0.0
+        evaluation["iterations"] = attempt
+        evaluation["initial_score"] = initial_evaluation_score
+        try:
+            evaluation["improved"] = float(evaluation.get("score") or 0) > float(initial_evaluation_score or 0)
+        except (TypeError, ValueError):
+            evaluation["improved"] = False
+        last_evaluation = evaluation
+        validation = dict(evaluation.get("legacy_validation") or {})
         current_payload["constraint_validation"] = validation
-        current_payload["planning_brief"] = planning_brief
-        current_payload.setdefault("trip", {})["planning_brief"] = planning_brief
+        current_payload["agent_evaluation"] = public_evaluation(evaluation)
+        _attach_planning_context(current_payload, planning_brief, memory_context, candidate_place_context)
         current_payload["trip"]["constraint_validation"] = validation
-        requires_replan = _should_replan_validation(validation)
-        if not requires_replan or not plan_source:
-            if requires_replan:
-                current_payload["trip"]["status"] = "needs_review"
-            return current_payload
+        current_payload["trip"]["agent_evaluation"] = public_evaluation(evaluation)
 
-        violation_signature = _validation_signature(validation)
-        if violation_signature in seen_violation_signatures or attempt >= max_replan_attempts:
+        requires_replan = should_replan(evaluation)
+        if not requires_replan:
+            current_payload["trip"]["status"] = "generated" if evaluation.get("passed") else "needs_review"
+            return _attach_generation_explanation(
+                current_payload,
+                planning_brief,
+                validation,
+                agent_evaluation=evaluation,
+                iterations=attempt,
+            )
+
+        evaluation_sig = evaluation_signature(evaluation)
+        if evaluation_sig in seen_evaluation_signatures or attempt >= max_replan_attempts:
             current_payload["trip"]["status"] = "needs_review"
-            return current_payload
-        seen_violation_signatures.add(violation_signature)
+            return _attach_generation_explanation(
+                current_payload,
+                planning_brief,
+                validation,
+                agent_evaluation=evaluation,
+                iterations=attempt,
+            )
+        seen_evaluation_signatures.add(evaluation_sig)
+
+        current_payload = await replan_payload(
+            db,
+            current_payload,
+            planning_brief,
+            evaluation,
+            prompt=request.prompt,
+            language=language,
+        )
+        _attach_planning_context(current_payload, planning_brief, memory_context, candidate_place_context)
+        current_payload["trip"]["agent_evaluation"] = public_evaluation(evaluation)
+        if current_payload.get("_replanner_changed"):
+            continue
+
+        if not plan_source:
+            current_payload["trip"]["status"] = "needs_review"
+            return _attach_generation_explanation(
+                current_payload,
+                planning_brief,
+                validation,
+                agent_evaluation=evaluation,
+                iterations=attempt,
+            )
 
         reasons = [
             *(str(value) for value in validation.get("violated_constraints") or []),
@@ -208,13 +347,119 @@ async def _optimize_payload_if_possible(
             action,
             previous_blueprints=previous_blueprints,
         )
-        current_payload = _generated_payload_from_plan(
+        current_payload = await asyncio.to_thread(
+            _generated_payload_from_plan,
             plan_source,
             request,
-            language=language,
-            planning_brief_override=planning_brief,
+            language,
+            planning_brief,
         )
-    return current_payload
+    return _attach_generation_explanation(
+        current_payload,
+        planning_brief,
+        current_payload.get("constraint_validation") or {},
+        agent_evaluation=last_evaluation,
+        iterations=max_replan_attempts,
+    )
+
+
+def _attach_planning_context(
+    payload: dict[str, Any],
+    planning_brief: dict[str, Any],
+    memory_context: dict[str, Any] | None,
+    candidate_place_context: dict[str, Any] | None = None,
+) -> None:
+    payload["planning_brief"] = planning_brief
+    payload["user_intent_analysis"] = planning_brief.get("user_intent_analysis")
+    payload["memory_context"] = memory_context or {}
+    payload["candidate_place_context"] = candidate_place_context or payload.get("candidate_place_context") or {}
+    payload["candidate_places"] = list((candidate_place_context or payload.get("candidate_place_context") or {}).get("candidates") or [])
+    trip = payload.setdefault("trip", {})
+    trip["planning_brief"] = planning_brief
+    trip["user_intent_analysis"] = planning_brief.get("user_intent_analysis")
+    trip["memory_context"] = memory_context or {}
+    trip["candidate_place_context"] = candidate_place_context or trip.get("candidate_place_context") or {}
+    trip["candidate_places"] = list((candidate_place_context or trip.get("candidate_place_context") or {}).get("candidates") or [])
+
+
+def _attach_generation_explanation(
+    payload: dict[str, Any],
+    planning_brief: dict[str, Any],
+    validation: dict[str, Any],
+    *,
+    agent_evaluation: dict[str, Any] | None = None,
+    iterations: int | None = None,
+) -> dict[str, Any]:
+    trip = payload.setdefault("trip", {})
+    selected_blueprints = [str(value) for value in payload.get("selected_blueprints") or [] if str(value).strip()]
+    replan_history = list(planning_brief.get("replan_history") or [])
+    violated_constraints = [str(value) for value in validation.get("violated_constraints") or []]
+    warnings = [str(value) for value in validation.get("warnings") or []]
+    public_agent_evaluation = public_evaluation(agent_evaluation) or payload.get("agent_evaluation")
+    if isinstance(public_agent_evaluation, dict):
+        public_agent_evaluation["iterations"] = iterations if iterations is not None else public_agent_evaluation.get("iterations")
+    trip["agent_explanation"] = {
+        "summary": (
+            "The agent converted the natural language request into a Planning Brief, selected day blueprints, "
+            "filled places, optimized routes, evaluated the draft, and replanned when needed."
+        ),
+        "planning_brief_snapshot": {
+            "trip_days": planning_brief.get("trip_days"),
+            "must_include": list(planning_brief.get("must_include") or []),
+            "must_avoid": list(planning_brief.get("must_avoid") or []),
+            "preferred_time_slots": list(planning_brief.get("preferred_time_slots") or []),
+            "meal_preference": list(planning_brief.get("meal_preference") or []),
+            "night_view_required": bool(planning_brief.get("night_view_required")),
+            "pace": planning_brief.get("pace"),
+            "travel_style": list(planning_brief.get("travel_style") or []),
+            "transport_preference": planning_brief.get("transport_preference"),
+            "user_intent_analysis": planning_brief.get("user_intent_analysis"),
+            "memory_preferences": list(planning_brief.get("memory_preferences") or []),
+        },
+        "selected_blueprints": selected_blueprints,
+        "validation": {
+            "is_valid": bool(validation.get("is_valid")),
+            "final_quality_score": validation.get("final_quality_score") or validation.get("score"),
+            "violated_constraints": violated_constraints,
+            "warnings": warnings,
+        },
+        "evaluation_summary": (public_agent_evaluation or {}).get("summary") if isinstance(public_agent_evaluation, dict) else [],
+        "evaluation_feedback": (public_agent_evaluation or {}).get("natural_language_feedback") if isinstance(public_agent_evaluation, dict) else [],
+        "evaluation_checks": (public_agent_evaluation or {}).get("checks") if isinstance(public_agent_evaluation, dict) else {},
+        "replan_history": replan_history,
+        "steps": [
+            "intent_classification",
+            "planning_brief_build",
+            "memory_retrieval",
+            "day_blueprint_selection",
+            "place_candidate_fill",
+            "route_optimization",
+            "plan_evaluation",
+            "targeted_replan",
+            "mongodb_persist",
+        ],
+    }
+    if isinstance(public_agent_evaluation, dict):
+        trip["agent_evaluation"] = public_agent_evaluation
+        payload["agent_evaluation"] = public_agent_evaluation
+        trip["agent_warnings"] = [
+            str(warning.get("message") or warning.get("target") or warning)
+            for warning in public_agent_evaluation.get("warnings") or []
+        ]
+    trip["agent_trace"] = {
+        "selected_blueprint_count": len(selected_blueprints),
+        "replan_count": len(replan_history),
+        "agent_loop_iterations": iterations,
+        "agent_loop_passed": bool((public_agent_evaluation or {}).get("passed")) if isinstance(public_agent_evaluation, dict) else bool(validation.get("is_valid")),
+        "has_constraint_violations": bool(violated_constraints),
+        "memory_context_available": bool((planning_brief.get("memory_context") or {}).get("long_term") or (planning_brief.get("memory_context") or {}).get("short_term")),
+        "intent_confidence": (planning_brief.get("user_intent_analysis") or {}).get("confidence") if isinstance(planning_brief.get("user_intent_analysis"), dict) else None,
+        "evaluation_feedback": (public_agent_evaluation or {}).get("natural_language_feedback") if isinstance(public_agent_evaluation, dict) else [],
+        "replanner_actions": list(trip.get("agent_replanner_actions") or payload.get("_replanner_actions") or []),
+    }
+    payload["planning_brief"] = planning_brief
+    payload["constraint_validation"] = validation
+    return payload
 
 
 def _should_replan_validation(validation: dict[str, Any]) -> bool:
@@ -232,6 +477,113 @@ def _should_replan_validation(validation: dict[str, Any]) -> bool:
         return final_quality < 0.82 or story_flow < 0.72
     except (TypeError, ValueError):
         return False
+
+
+def _repair_missing_must_include_items(
+    payload: dict[str, Any],
+    planning_brief: dict[str, Any],
+    validation: dict[str, Any],
+) -> bool:
+    missing = [str(value) for value in validation.get("missing_must_include") or [] if str(value).strip()]
+    if not missing:
+        return False
+
+    _ensure_repo_root_on_path()
+    try:
+        from parser_api.services.place_catalog import resolve_place
+    except ModuleNotFoundError:
+        return False
+
+    itinerary_days = list(payload.get("itinerary_days") or [])
+    if not itinerary_days:
+        return False
+
+    hard_names = [str(value) for value in planning_brief.get("must_include") or [] if str(value).strip()]
+    hard_norms = _resolved_place_norms(hard_names, resolve_place)
+    changed = False
+
+    for missing_name in missing:
+        place = resolve_place(missing_name)
+        if place is None:
+            continue
+        day = itinerary_days[0]
+        items = list(day.get("items") or [])
+        if not items:
+            continue
+        replace_index = _replaceable_item_index_for_missing_include(items, hard_norms)
+        slot = _slot_for_repaired_place(place, planning_brief)
+        replacement = _agent_item_from_resolved_place(
+            place=place,
+            day_number=int(day.get("day_number") or 1),
+            slot=slot,
+            item_index=(replace_index + 1) if replace_index is not None else len(items) + 1,
+        )
+        if replace_index is None:
+            insert_at = max(0, len(items) - 1)
+            items.insert(insert_at, replacement)
+        else:
+            items[replace_index] = replacement
+        day["items"] = items
+        day["route_summary"] = _agent_day_route_summary(items)
+        changed = True
+
+    if changed:
+        payload["itinerary_days"] = itinerary_days
+        selected_places = _agent_selected_places(itinerary_days)
+        if selected_places:
+            payload["selected_places"] = selected_places
+            payload.setdefault("trip", {})["route_summary"] = f"{', '.join(selected_places[:5])} 중심으로 누락된 필수 장소를 보강했습니다."
+    return changed
+
+
+def _replaceable_item_index_for_missing_include(items: list[dict[str, Any]], hard_norms: set[str]) -> int | None:
+    fallback_index: int | None = None
+    for index, item in enumerate(items):
+        place = item.get("place") or {}
+        category = str(place.get("category") or "").lower()
+        if category in {"free_time", "meal_placeholder", "restaurant", "cafe", "bakery", "bar", "bistro", "brasserie"}:
+            continue
+        item_text = _simple_normalize(" ".join([str(item.get("title") or ""), str(place.get("name") or "")]))
+        if any(hard and (hard in item_text or item_text in hard) for hard in hard_norms):
+            continue
+        if str(item.get("time_slot") or "") == "evening":
+            fallback_index = index if fallback_index is None else fallback_index
+            continue
+        return index
+    return fallback_index
+
+
+def _resolved_place_norms(names: list[str], resolve_place_fn: Any) -> set[str]:
+    norms: set[str] = set()
+    for name in names:
+        direct = _simple_normalize(name)
+        if direct:
+            norms.add(direct)
+        resolved = resolve_place_fn(name)
+        if not isinstance(resolved, dict):
+            continue
+        for value in (
+            resolved.get("slug"),
+            resolved.get("place_id"),
+            resolved.get("name"),
+            resolved.get("title"),
+        ):
+            normalized = _simple_normalize(str(value or ""))
+            if normalized:
+                norms.add(normalized)
+    return norms
+
+
+def _slot_for_repaired_place(place: dict[str, Any], planning_brief: dict[str, Any]) -> str:
+    category = str(place.get("category") or "").lower()
+    slug = str(place.get("slug") or place.get("place_id") or "").lower()
+    if bool(planning_brief.get("night_view_required")) and slug in {"eiffel-tower", "seine-river-walk", "arc-de-triomphe"}:
+        return "evening"
+    if category in {"cathedral", "museum"}:
+        return "morning"
+    if category in {"park", "garden"}:
+        return "afternoon"
+    return "afternoon"
 
 
 def _validation_signature(validation: dict[str, Any]) -> tuple[str, ...]:
@@ -884,6 +1236,19 @@ async def _persist_agent_modified_itinerary(
             }
         },
     )
+    await save_itinerary_state(
+        db,
+        user_id=user_id,
+        trip_id=trip_id,
+        trip={
+            "id": trip_id,
+            "status": "modified",
+            "route_summary": route_summary,
+            "planning_brief": planning_brief,
+            "constraint_validation": constraint_validation,
+        },
+        itinerary_days=itinerary_days,
+    )
 
 
 def _agent_date_to_datetime(value: date | datetime | str | None) -> datetime | None:
@@ -1125,12 +1490,13 @@ def _generated_payload_from_plan(
     total_days = _resolve_total_days(request, plan)
     start, end = _resolve_dates(request, plan, total_days)
     themes = list(dict.fromkeys([*_plan_themes(plan), *request.style_tags, *_infer_tags(request.prompt)]))
-    must_include = _plan_must_include(plan)
     planning_brief = planning_brief_override or build_planning_brief(
         plan=plan,
         request=request,
         intent="create_trip",
+        language=language,
     )
+    must_include = [str(value) for value in planning_brief.get("must_include") or [] if str(value).strip()] or _plan_must_include(plan)
 
     itinerary_bundle = _build_agent_itinerary_bundle(
         plan=plan,

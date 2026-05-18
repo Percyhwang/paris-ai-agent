@@ -72,3 +72,6 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.places.create_index("name")
     await db.places.create_index("source")
     await db.places.create_index([("location", "2dsphere")])
+    await db.trip_state.create_index([("user_id", 1), ("trip_id", 1)], unique=True)
+    await db.user_travel_memory.create_index([("user_id", 1), ("updated_at", -1)])
+    await db.user_travel_memory.create_index([("user_id", 1), ("memory_key", 1)])

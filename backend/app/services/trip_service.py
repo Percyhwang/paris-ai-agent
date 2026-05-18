@@ -9,6 +9,8 @@ from pymongo import ReturnDocument
 
 from app.db.serializers import serialize_doc, serialize_many, to_object_id
 from app.schemas.trips import ItineraryUpdate, TripCreate, TripUpdate
+from app.services.memory_retrieval_service import update_feedback_memory
+from app.services.trip_state_service import save_itinerary_state
 
 
 def _now() -> datetime:
@@ -105,6 +107,23 @@ async def create_generated_trip(db: AsyncIOMotorDatabase, user_id: str, payload:
         },
     )
     await db.users.update_one({"_id": ObjectId(user_id)}, {"$addToSet": {"trips": trip_id}, "$set": {"updated_at": now}})
+    await save_itinerary_state(
+        db,
+        user_id=user_id,
+        trip_id=trip_id,
+        trip=trip_doc | {"id": trip_id},
+        itinerary_days=payload.get("itinerary_days") or day_docs,
+    )
+    await update_feedback_memory(
+        db,
+        user_id=user_id,
+        trip_id=trip_id,
+        prompt=str(trip_doc.get("prompt") or payload.get("prompt") or ""),
+        planning_brief=payload.get("planning_brief") or trip_doc.get("planning_brief"),
+        itinerary_days=payload.get("itinerary_days") or day_docs,
+        agent_evaluation=payload.get("agent_evaluation") or trip_doc.get("agent_evaluation"),
+        source="trip_generation",
+    )
     return await get_trip_detail(db, user_id, trip_id)
 
 

@@ -3,3 +3,4 @@ dist
 .env
 .env.*
 npm-debug.log*
+*.log

@@ -5,6 +5,7 @@ import { EmptyState } from "../components/common/EmptyState";
 import { LoadingState } from "../components/common/LoadingState";
 import { PageContainer } from "../components/common/PageContainer";
 import { TripSelector } from "../components/common/TripSelector";
+import { AgentSummaryCard } from "../components/agent/AgentSummaryCard";
 import { GoogleMapViewer } from "../components/itinerary/GoogleMapViewer";
 import { Timeline } from "../components/itinerary/Timeline";
 import { useTripSelection } from "../hooks/useTripSelection";
@@ -328,6 +329,14 @@ export function TripPlanPage() {
                 </>
               )}
             </div>
+            <AgentSummaryCard
+              title={language === "en" ? "Agent review" : "Agent 검토 결과"}
+              summary={trip.agent_summary ?? null}
+              constraints={trip.understood_constraints ?? (trip.agent_explanation?.planning_brief_snapshot as Record<string, unknown> | undefined)}
+              evaluation={trip.evaluation_summary ?? (trip.agent_evaluation?.summary as string[] | undefined)}
+              repairSummary={trip.repair_summary}
+              warnings={trip.warnings ?? trip.agent_warnings}
+            />
             <form className="agent-edit-panel" onSubmit={handleAgentEditSubmit}>
               <label>
                 <span>{copy.agentEditTitle}</span>

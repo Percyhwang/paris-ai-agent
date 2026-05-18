@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { AgentSummaryCard } from "../components/agent/AgentSummaryCard";
 import { PageContainer } from "../components/common/PageContainer";
 import { useLanguage } from "../store/LanguageContext";
 import {
@@ -80,6 +81,9 @@ export function AccommodationSearchPage() {
   } | null>(null);
   const [expandedId, setExpandedId] = useState<string | number | null>(null);
   const [rooms, setRooms] = useState<Record<string, Room[]>>({});
+  const [agentSummary, setAgentSummary] = useState<string | null>(null);
+  const [rankingSummary, setRankingSummary] = useState<Record<string, unknown> | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [roomLoading, setRoomLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +103,9 @@ export function AccommodationSearchPage() {
       const result = await recommendHotels(query);
       setHotels(result.hotels);
       setParsedParams(result.parsedParams);
+      setAgentSummary(result.agent_summary ?? null);
+      setRankingSummary(result.ranking_summary ?? null);
+      setWarnings(result.warnings ?? []);
       if (result.hotels.length === 0) setError(copy.noResults);
     } catch (err) {
       setError(err instanceof Error ? err.message : "추천 요청에 실패했습니다.");
@@ -150,6 +157,14 @@ export function AccommodationSearchPage() {
         </form>
 
         {error && <p className="error-message">{error}</p>}
+
+        <AgentSummaryCard
+          title={language === "en" ? "Hotel agent review" : "숙소 Agent 검토"}
+          summary={agentSummary}
+          constraints={parsedParams as Record<string, unknown> | null}
+          repairSummary={rankingSummary}
+          warnings={warnings}
+        />
 
         {/* ── AI가 이해한 조건 요약 ── */}
         {parsedParams && !loading && (

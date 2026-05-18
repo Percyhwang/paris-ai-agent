@@ -9,24 +9,24 @@ import { useLanguage } from "../store/LanguageContext";
 import type { Place } from "../types";
 import { getPlaceCategoryLabel } from "../utils/placeLabels";
 
-const categories = ["all", "landmark", "museum", "cathedral", "park", "neighborhood"] as const;
+const categories = ["all", "landmark", "museum", "cathedral", "park", "neighborhood", "shopping", "cafe", "restaurant"] as const;
 
 const PLACES_COPY = {
   ko: {
     eyebrow: "파리 명소 가이드",
     title: "파리 스팟",
-    description: "랜드마크부터 박물관, 공원과 감성적인 동네까지 원하는 분위기의 파리 명소를 찾아보세요.",
+    description: "랜드마크부터 미술관, 공원, 감성적인 동네와 카페까지 원하는 분위기의 파리 스팟을 찾아보세요.",
     searchPlaceholder: "관광지 이름, 태그, 분위기를 검색해 보세요",
     loading: "파리 스팟을 불러오고 있습니다",
     loadError: "파리 스팟을 불러오지 못했습니다.",
     emptyTitle: "검색 결과가 없습니다",
     emptyDescription: "다른 검색어나 카테고리로 다시 찾아보세요.",
-    addMessage: (name: string) => `${name} 정보를 다음 여행 계획에 담을 준비를 마쳤어요.`,
+    addMessage: (name: string) => `${name} 정보를 다음 여행 계획에 넣을 준비를 마쳤어요.`,
   },
   en: {
     eyebrow: "Paris Spot Guide",
     title: "Paris Spots",
-    description: "Explore Paris landmarks, museums, parks, and neighborhoods without changing the current UI feel.",
+    description: "Explore landmarks, museums, parks, neighborhoods, cafes, and food stops for the Paris mood you want.",
     searchPlaceholder: "Search by place name, vibe, or tag",
     loading: "Loading Paris spots",
     loadError: "Could not load Paris spots.",
@@ -72,7 +72,7 @@ export function PlacesPage() {
       }
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [search, category, copy.loadError]);
+  }, [search, category, language, copy.loadError]);
 
   function handleAddToPlan(place: Place) {
     localStorage.setItem("pendingPlaceForTrip", JSON.stringify(place));

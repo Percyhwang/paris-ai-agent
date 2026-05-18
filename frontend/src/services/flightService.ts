@@ -7,6 +7,7 @@ export interface FlightRecommendation extends Flight {
 
 export interface RecommendFlightsResult {
   flights: FlightRecommendation[];
+  flight_candidates?: FlightRecommendation[];
   parsedParams: {
     origin: string;
     destination: string;
@@ -17,6 +18,13 @@ export interface RecommendFlightsResult {
     preferences: string[];
   };
   count: number;
+  trip_id?: string | null;
+  agent_summary?: string;
+  ranking_reason?: string[];
+  ranking_summary?: Record<string, unknown>;
+  search_conditions?: Record<string, unknown>;
+  warnings?: string[];
+  frontend_display?: Record<string, unknown>;
 }
 
 export interface Flight {
@@ -74,7 +82,7 @@ export async function searchFlights(params: {
   adults?: number;
   currency?: string;
   limit?: number;
-}): Promise<{ flights: Flight[]; count: number }> {
+}): Promise<{ flights: Flight[]; flight_candidates?: Flight[]; count: number; warnings?: string[]; frontend_display?: Record<string, unknown> }> {
   const query = new URLSearchParams();
   query.set("origin", params.origin);
   query.set("destination", params.destination);

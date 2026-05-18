@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any
 from uuid import uuid4
@@ -15,11 +16,13 @@ from app.services.place_repository_service import (
     resolve_place,
 )
 
-DAY_START_MINUTES = 9 * 60 + 15
+DAY_START_MINUTES = 9 * 60 + 30
 LUNCH_START_MINUTES = 12 * 60
 DINNER_START_MINUTES = 18 * 60 + 15
 EVENING_START_MINUTES = 18 * 60
 GAP_DISCLOSURE_MINUTES = 15
+DAY_END_MINUTES = 23 * 60 + 45
+LATEST_STOP_START_MINUTES = 23 * 60
 MEAL_PLACE_CATEGORIES = {"bar", "bakery", "bistro", "brasserie", "cafe", "restaurant", "wine_bar"}
 
 PACE_DURATION_MULTIPLIER = {
@@ -65,6 +68,9 @@ def _preference_profile(prompt: str, style_tags: list[Any], planning_brief: dict
     haystack = " ".join([prompt.lower(), *tokens, *brief_style, *meal_preferences])
     pace_level = _pace_level_from_brief(brief) or infer_pace_level(prompt, style_tags)
     route_mode = _route_mode_from_brief(brief) or infer_route_mode(prompt, style_tags)
+    low_walking = _low_walking_requested(brief, prompt=prompt, style_tags=style_tags)
+    if low_walking and route_mode in {"walk", "mixed"}:
+        route_mode = "transit"
     return {
         "night_view": bool(brief.get("night_view_required")) or any(token in haystack for token in ("night_view", "night", "view", "야경", "석양", "선셋")),
         "museum": any(token in haystack for token in ("museum", "art", "미술관", "박물관", "예술")),
@@ -73,6 +79,7 @@ def _preference_profile(prompt: str, style_tags: list[Any], planning_brief: dict
         "foodie": any(token in haystack for token in ("foodie", "cafe", "맛집", "카페", "브런치")),
         "slow": pace_level == "slow",
         "fast": pace_level == "fast",
+        "low_walking": low_walking,
         "route_mode": route_mode,
         "style_tags": list(dict.fromkeys([*tokens, *brief_style])),
         "planning_brief": brief,
@@ -108,6 +115,23 @@ async def optimize_trip_payload(
 
 def infer_route_mode(prompt: str, style_tags: list[Any]) -> RouteMode:
     haystack = " ".join([prompt, *[str(tag) for tag in style_tags]]).lower()
+    compact = _compact_source_text(haystack)
+    if any(
+        token in compact
+        for token in (
+            "lesswalking",
+            "lowwalking",
+            "avoidwalking",
+            "notmuchwalking",
+            "nolongwalks",
+            "\ub9ce\uc774\uac77\uae30\uc2eb",
+            "\ub9ce\uc774\uc548\uac77",
+            "\ub3c4\ubcf4\ubd80\ub2f4",
+            "\uac77\ub294\uac70\uc2eb",
+            "\uc774\ub3d9\uac15\ub3c4\ub0ae",
+        )
+    ):
+        return "transit"
     walk_keywords = ["walk", "walking", "on foot", "도보", "걸어서", "걷", "산책"]
     transit_keywords = ["transit", "metro", "subway", "bus", "rer", "train", "대중교통", "지하철", "버스"]
     walk_keywords.extend(["\ub3c4\ubcf4", "\uac77\uae30", "\uac78\uc5b4"])
@@ -149,12 +173,15 @@ async def attach_route_legs_to_days(
             continue
         await _attach_route_legs(items, route_mode, language)
         day["items"] = _schedule_day(items, pace_level, language, preference_profile)
+        day["items"] = _trim_low_walking_items_after_schedule(day["items"], preference_profile)
         _apply_day_theme(day, language, preference_profile, day_index, total_days)
         _enrich_day_story(day, day["items"], route_mode, preference_profile, language)
     return route_mode
 
 
 def _route_mode_from_brief(planning_brief: dict[str, Any]) -> RouteMode | None:
+    if _low_walking_requested(planning_brief):
+        return "transit"
     preference = str(planning_brief.get("transport_preference") or "").lower()
     if preference == "walk":
         return "walk"
@@ -170,6 +197,46 @@ def _pace_level_from_brief(planning_brief: dict[str, Any]) -> str | None:
     return value if value in {"slow", "normal", "fast"} else None
 
 
+def _low_walking_requested(
+    planning_brief: dict[str, Any] | None,
+    *,
+    prompt: str = "",
+    style_tags: list[Any] | None = None,
+) -> bool:
+    brief = planning_brief if isinstance(planning_brief, dict) else {}
+    mobility = brief.get("mobility_constraints") if isinstance(brief.get("mobility_constraints"), dict) else {}
+    if str(brief.get("walking_intensity") or mobility.get("walking_intensity") or "").lower() == "low":
+        return True
+    if bool(mobility.get("prefer_transit_between_areas")):
+        return True
+    text = " ".join(
+        [
+            prompt,
+            str(brief.get("source_text") or ""),
+            " ".join(str(tag) for tag in (style_tags or [])),
+            " ".join(str(tag) for tag in brief.get("travel_style") or []),
+            " ".join(str(value) for value in brief.get("must_avoid") or []),
+        ]
+    ).lower()
+    compact = _compact_source_text(text)
+    return any(
+        token in compact
+        for token in (
+            "lesswalking",
+            "lowwalking",
+            "avoidwalking",
+            "notmuchwalking",
+            "nolongwalks",
+            "\ub9ce\uc774\uac77\uae30\uc2eb",
+            "\ub9ce\uc774\uac77\uc9c0",
+            "\ub9ce\uc774\uc548\uac77",
+            "\ub3c4\ubcf4\ubd80\ub2f4",
+            "\uac77\ub294\uac70\uc2eb",
+            "\uc774\ub3d9\uac15\ub3c4\ub0ae",
+        )
+    )
+
+
 async def _optimize_day(
     db: AsyncIOMotorDatabase,
     day: dict[str, Any],
@@ -181,6 +248,8 @@ async def _optimize_day(
     total_days: int,
 ) -> None:
     original_items = [dict(item) for item in day.get("items") or []]
+    original_items = await _ensure_brief_must_include_items(db, original_items, preference_profile, language, day_index, total_days)
+    original_items = _compact_required_route_items(original_items, preference_profile)
     preserve_planner_story = bool(day.get("blueprintArchetype") or day.get("dayArchetype")) and _has_explicit_story_order(original_items)
     if preserve_planner_story:
         resolved_items: list[dict[str, Any]] = []
@@ -190,8 +259,38 @@ async def _optimize_day(
         resolved_items = _dedupe_items_by_place(resolved_items)
         if not resolved_items:
             return
+        resolved_items = await _ensure_requested_meal_anchors(
+            db,
+            resolved_items,
+            language,
+            preference_profile,
+        )
+        resolved_items = _ensure_requested_cafe_anchor(resolved_items, language, preference_profile)
+        resolved_items = _apply_scoped_daypart_times(resolved_items, preference_profile)
+        resolved_items = _apply_structured_place_constraints(resolved_items, preference_profile)
+        resolved_items = _apply_explicit_source_order(resolved_items, preference_profile)
+        resolved_items = _move_final_anchor_to_end(resolved_items, preference_profile)
+        resolved_items = _apply_structured_place_constraints(resolved_items, preference_profile)
+        resolved_items = _apply_explicit_source_order(resolved_items, preference_profile, keep_final=True)
+        resolved_items = _drop_negative_night_tail_items(resolved_items, preference_profile)
         await _attach_route_legs(resolved_items, route_mode, language)
         day["items"] = _schedule_day(resolved_items, pace_level, language, preference_profile)
+        day["items"] = await _repair_missing_required_after_schedule(
+            db,
+            day["items"],
+            route_mode,
+            pace_level,
+            language,
+            preference_profile,
+            day_index,
+            total_days,
+        )
+        day["items"] = _dedupe_items_by_place(day["items"])
+        day["items"] = _trim_museum_limit_after_schedule(day["items"], preference_profile)
+        day["items"] = _trim_slow_items_after_schedule(day["items"], preference_profile)
+        day["items"] = _trim_relaxed_items_after_schedule(day["items"], preference_profile)
+        day["items"] = _trim_low_walking_items_after_schedule(day["items"], preference_profile)
+        day["items"] = _drop_items_after_final_anchor(day["items"], preference_profile)
         _apply_day_theme(day, language, preference_profile, day_index, total_days)
         _enrich_day_story(day, day["items"], route_mode, preference_profile, language)
         return
@@ -222,10 +321,369 @@ async def _optimize_day(
         planned_dinner=planned_dinner,
         preference_profile=preference_profile,
     )
+    enriched_items = _ensure_requested_cafe_anchor(enriched_items, language, preference_profile)
+    enriched_items = _apply_scoped_daypart_times(enriched_items, preference_profile)
+    enriched_items = _apply_structured_place_constraints(enriched_items, preference_profile)
+    enriched_items = _apply_explicit_source_order(enriched_items, preference_profile)
+    enriched_items = _move_final_anchor_to_end(enriched_items, preference_profile)
+    enriched_items = _apply_structured_place_constraints(enriched_items, preference_profile)
+    enriched_items = _apply_explicit_source_order(enriched_items, preference_profile, keep_final=True)
+    enriched_items = _drop_negative_night_tail_items(enriched_items, preference_profile)
     await _attach_route_legs(enriched_items, route_mode, language)
     day["items"] = _schedule_day(enriched_items, pace_level, language, preference_profile)
+    day["items"] = await _repair_missing_required_after_schedule(
+        db,
+        day["items"],
+        route_mode,
+        pace_level,
+        language,
+        preference_profile,
+        day_index,
+        total_days,
+    )
+    day["items"] = _dedupe_items_by_place(day["items"])
+    day["items"] = _trim_museum_limit_after_schedule(day["items"], preference_profile)
+    day["items"] = _trim_slow_items_after_schedule(day["items"], preference_profile)
+    day["items"] = _trim_relaxed_items_after_schedule(day["items"], preference_profile)
+    day["items"] = _trim_low_walking_items_after_schedule(day["items"], preference_profile)
+    day["items"] = _drop_items_after_final_anchor(day["items"], preference_profile)
     _apply_day_theme(day, language, preference_profile, day_index, total_days)
     _enrich_day_story(day, day["items"], route_mode, preference_profile, language)
+
+
+async def _repair_missing_required_after_schedule(
+    db: AsyncIOMotorDatabase,
+    scheduled_items: list[dict[str, Any]],
+    route_mode: RouteMode,
+    pace_level: str,
+    language: str,
+    preference_profile: dict[str, Any],
+    day_index: int | None = None,
+    total_days: int | None = None,
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict):
+        return scheduled_items
+    constraints = [constraint for constraint in brief.get("place_constraints") or [] if isinstance(constraint, dict)]
+    next_items = [dict(item) for item in scheduled_items]
+    changed = False
+    for target in [str(value) for value in brief.get("must_include") or [] if str(value).strip()]:
+        constraint = next(
+            (
+                constraint
+                for constraint in constraints
+                if str(constraint.get("target") or "") == target
+                or _compact_source_text(str(constraint.get("target") or "")) == _compact_source_text(target)
+            ),
+            {"target": target},
+        )
+        constraint = dict(constraint)
+        if not str(constraint.get("canonical") or "").strip():
+            inferred_canonical = _canonical_from_target_text(target)
+            if inferred_canonical:
+                constraint["canonical"] = inferred_canonical
+        if not _must_include_repair_applies_to_day(constraint, day_index=day_index, total_days=total_days):
+            continue
+        if any(_item_matches_constraint(item, constraint) for item in next_items):
+            continue
+        if str(constraint.get("canonical") or "") == "champs" and _mark_arc_axis_as_champs(next_items):
+            changed = True
+            continue
+        place = await _resolve_brief_target_place(db, target, constraint)
+        if not place:
+            continue
+        slot = str(constraint.get("time_slot") or "").strip() or _default_slot_for_constraint(constraint)
+        item = _item_from_resolved_place(place, slot=slot, language=language)
+        item["slotLockReason"] = "brief_must_include_repair"
+        next_items.append(item)
+        changed = True
+    if not changed:
+        return scheduled_items
+
+    next_items = _dedupe_items_by_place(next_items)
+    next_items = _apply_structured_place_constraints(next_items, preference_profile)
+    next_items = _move_final_anchor_to_end(next_items, preference_profile)
+    next_items = _apply_structured_place_constraints(next_items, preference_profile)
+    await _attach_route_legs(next_items, route_mode, language)
+    return _schedule_day(next_items, pace_level, language, preference_profile)
+
+
+def _must_include_repair_applies_to_day(
+    constraint: dict[str, Any],
+    *,
+    day_index: int | None,
+    total_days: int | None,
+) -> bool:
+    """Avoid injecting trip-level anchors into every day of a multi-day plan."""
+
+    if not total_days or total_days <= 1 or day_index is None:
+        return True
+    explicit_day = _constraint_day_number(constraint)
+    if explicit_day is not None:
+        return explicit_day == day_index + 1
+    if bool(constraint.get("final")):
+        return day_index == total_days - 1
+    return str(constraint.get("scope") or "").lower() == "daily"
+
+
+def _constraint_day_number(constraint: dict[str, Any]) -> int | None:
+    for key in ("target_day", "preferred_day", "day_number", "day"):
+        raw = constraint.get(key)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _mark_arc_axis_as_champs(items: list[dict[str, Any]]) -> bool:
+    for item in items:
+        if not _item_matches_constraint(item, {"canonical": "arc", "target": "Arc de Triomphe"}):
+            continue
+        place = item.setdefault("place", {})
+        tags = list(place.get("tags") or [])
+        for tag in ("champselysees", "champs-elysees", "\uc0f9\uc824\ub9ac\uc81c"):
+            if tag not in tags:
+                tags.append(tag)
+        place["tags"] = tags
+        item["routeAxisLabel"] = "Champs-Elysees"
+        return True
+    return False
+
+
+def _trim_slow_items_after_schedule(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict) or str(brief.get("pace") or "").lower() != "slow":
+        return items
+    next_items = [dict(item) for item in items]
+    hard_constraints = []
+    for value in [str(value) for value in brief.get("must_include") or [] if str(value).strip()]:
+        constraint = {"target": value}
+        inferred_canonical = _canonical_from_target_text(value)
+        if inferred_canonical:
+            constraint["canonical"] = inferred_canonical
+        hard_constraints.append(constraint)
+    real_count = sum(1 for item in next_items if item.get("itemKind") != "gap")
+    while real_count > 5:
+        remove_index = None
+        for index in range(len(next_items) - 1, -1, -1):
+            item = next_items[index]
+            if item.get("itemKind") == "gap" or item.get("finalAnchor"):
+                continue
+            if any(_item_matches_constraint(item, constraint) for constraint in hard_constraints):
+                continue
+            role = _role_key(item)
+            if role in {"cafe", "restaurant"} and real_count <= 6:
+                continue
+            remove_index = index
+            break
+        if remove_index is None:
+            break
+        next_items.pop(remove_index)
+        real_count = sum(1 for item in next_items if item.get("itemKind") != "gap")
+    return next_items
+
+
+def _trim_relaxed_items_after_schedule(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict) or str(brief.get("pace") or "").lower() == "fast":
+        return items
+    compact_source = _compact_source_text(str(brief.get("source_text") or ""))
+    relaxed_signal = any(
+        token in compact_source
+        for token in (
+            "\uac00\ubccd\uac8c",
+            "\ud734\uc2dd",
+            "\ud558\ub098",
+            "\uc815\ub3c4",
+            "\uc774\uba74\uc88b",
+            "\uc788\uc73c\uba74\ub3fc",
+            "\uc788\uc73c\uba74\ub418",
+            "\uc801\uac8c",
+            "relaxed",
+        )
+    )
+    meal_preferences = {str(value).lower() for value in brief.get("meal_preference") or []}
+    has_avoid = bool([value for value in brief.get("must_avoid") or [] if str(value).strip()])
+    if not relaxed_signal and not (has_avoid and "cafe" in meal_preferences):
+        return items
+    return _trim_to_real_item_limit(items, preference_profile, limit=6)
+
+
+def _trim_low_walking_items_after_schedule(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not preference_profile.get("low_walking"):
+        return items
+    next_items = [dict(item) for item in items]
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    hard_constraints = _hard_constraints_from_brief(brief if isinstance(brief, dict) else {})
+
+    walk_like_indices = [
+        index
+        for index, item in enumerate(next_items)
+        if item.get("itemKind") != "gap" and _is_walk_like_item(item, _role_key(item))
+    ]
+    while len(walk_like_indices) > 1:
+        remove_index = None
+        for index in reversed(walk_like_indices):
+            item = next_items[index]
+            if item.get("finalAnchor"):
+                continue
+            if any(_item_matches_constraint(item, constraint) for constraint in hard_constraints):
+                continue
+            remove_index = index
+            break
+        if remove_index is None:
+            break
+        next_items.pop(remove_index)
+        walk_like_indices = [
+            index
+            for index, item in enumerate(next_items)
+            if item.get("itemKind") != "gap" and _is_walk_like_item(item, _role_key(item))
+        ]
+    return next_items
+
+
+def _trim_museum_limit_after_schedule(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict):
+        return items
+    try:
+        museum_limit = int(brief.get("museum_limit_per_day") or 0)
+    except (TypeError, ValueError):
+        museum_limit = 0
+    compact_source = _compact_source_text(str(brief.get("source_text") or ""))
+    if not museum_limit and not any(
+        token in compact_source
+        for token in (
+            "\ubc15\ubb3c\uad00\uc740\uc801\uac8c",
+            "\ubbf8\uc220\uad00\uc740\uc801\uac8c",
+            "\ubc15\ubb3c\uad00\uc801\uac8c",
+            "\ubbf8\uc220\uad00\uc801\uac8c",
+            "\ubc15\ubb3c\uad00\uc740\ud558\ub098\uc774\ud558",
+            "\ubbf8\uc220\uad00\uc740\ud558\ub098\uc774\ud558",
+            "\ubc15\ubb3c\uad00\ud558\ub098\uc774\ud558",
+            "\ubbf8\uc220\uad00\ud558\ub098\uc774\ud558",
+            "\ubc15\ubb3c\uad001\uac1c\uc774\ud558",
+            "\ubbf8\uc220\uad001\uac1c\uc774\ud558",
+            "\ub300\ud45c\ud558\ub098\ub9cc",
+            "\ud558\ub098\ub9cc\ubcf4",
+            "museumlimit",
+        )
+    ):
+        return items
+    museum_limit = museum_limit or 1
+    hard_constraints = _hard_constraints_from_brief(brief)
+    kept_museum_count = 0
+    trimmed: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("itemKind") == "gap" or _role_key(item) != "museum":
+            trimmed.append(item)
+            continue
+        if any(_item_matches_constraint(item, constraint) for constraint in hard_constraints):
+            kept_museum_count += 1
+            trimmed.append(item)
+            continue
+        if kept_museum_count < museum_limit:
+            kept_museum_count += 1
+            trimmed.append(item)
+    return trimmed
+
+
+def _trim_to_real_item_limit(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    hard_constraints = _hard_constraints_from_brief(brief if isinstance(brief, dict) else {})
+    next_items = [dict(item) for item in items]
+    while sum(1 for item in next_items if item.get("itemKind") != "gap") > limit:
+        remove_index = None
+        for index in range(len(next_items) - 1, -1, -1):
+            item = next_items[index]
+            if item.get("itemKind") == "gap" or item.get("finalAnchor"):
+                continue
+            if any(_item_matches_constraint(item, constraint) for constraint in hard_constraints):
+                continue
+            remove_index = index
+            break
+        if remove_index is None:
+            break
+        next_items.pop(remove_index)
+    return next_items
+
+
+def _hard_constraints_from_brief(brief: dict[str, Any]) -> list[dict[str, Any]]:
+    hard_constraints = []
+    constraints = [constraint for constraint in brief.get("place_constraints") or [] if isinstance(constraint, dict)]
+    for value in [str(value) for value in brief.get("must_include") or [] if str(value).strip()]:
+        constraint = next(
+            (
+                constraint
+                for constraint in constraints
+                if str(constraint.get("target") or "") == value
+                or _compact_source_text(str(constraint.get("target") or "")) == _compact_source_text(value)
+            ),
+            {"target": value},
+        )
+        constraint = dict(constraint)
+        inferred_canonical = _canonical_from_target_text(value)
+        if inferred_canonical:
+            constraint["canonical"] = inferred_canonical
+        hard_constraints.append(constraint)
+    return hard_constraints
+
+
+def _drop_items_after_final_anchor(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict):
+        return items
+    final_target = str(brief.get("final_anchor") or "").strip()
+    if not final_target:
+        return items
+    final_constraint = {"target": final_target}
+    inferred_canonical = _canonical_from_target_text(final_target)
+    if inferred_canonical:
+        final_constraint["canonical"] = inferred_canonical
+    final_index = next(
+        (
+            index
+            for index, item in enumerate(items)
+            if item.get("itemKind") != "gap"
+            and (item.get("finalAnchor") or str(item.get("slotLockReason") or "") in {"structured_final_anchor", "final_night_anchor"} or _item_matches_constraint(item, final_constraint))
+        ),
+        None,
+    )
+    if final_index is None or final_index == len(items) - 1:
+        return items
+    hard_constraints = _hard_constraints_from_brief(brief)
+    final_item = items[final_index]
+    before_final = list(items[:final_index])
+    hard_tail: list[dict[str, Any]] = []
+    for item in items[final_index + 1 :]:
+        if item.get("itemKind") == "gap":
+            continue
+        if any(_item_matches_constraint(item, constraint) for constraint in hard_constraints):
+            hard_tail.append(item)
+    return [*before_final, *hard_tail, final_item]
 
 
 async def _resolve_item_place(db: AsyncIOMotorDatabase, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -245,9 +703,192 @@ async def _resolve_item_place(db: AsyncIOMotorDatabase, item: dict[str, Any]) ->
         return None
 
     resolved_item = dict(item)
-    resolved_item["place"] = {**place, **resolved_place, "coordinates": coordinates}
+    resolved_item["place"] = _merge_place_metadata(place, resolved_place, coordinates=coordinates)
     resolved_item["title"] = resolved_place.get("name") or resolved_item.get("title") or name
     return resolved_item
+
+
+def _merge_place_metadata(
+    original: dict[str, Any],
+    resolved: dict[str, Any],
+    *,
+    coordinates: dict[str, Any],
+) -> dict[str, Any]:
+    merged = {**resolved}
+    for key, value in original.items():
+        if value not in (None, "", [], {}):
+            merged[key] = value
+    merged["coordinates"] = coordinates
+    return merged
+
+
+async def _ensure_brief_must_include_items(
+    db: AsyncIOMotorDatabase,
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+    language: str,
+    day_index: int | None = None,
+    total_days: int | None = None,
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict):
+        return items
+    next_items = list(items)
+    changed = False
+    constraints = [constraint for constraint in brief.get("place_constraints") or [] if isinstance(constraint, dict)]
+    for target in [str(value) for value in brief.get("must_include") or [] if str(value).strip()]:
+        constraint = next(
+            (
+                constraint
+                for constraint in constraints
+                if str(constraint.get("target") or "") == target
+                or _compact_source_text(str(constraint.get("target") or "")) == _compact_source_text(target)
+            ),
+            {"target": target},
+        )
+        constraint = dict(constraint)
+        if not str(constraint.get("canonical") or "").strip():
+            inferred_canonical = _canonical_from_target_text(target)
+            if inferred_canonical:
+                constraint["canonical"] = inferred_canonical
+        if not _must_include_repair_applies_to_day(constraint, day_index=day_index, total_days=total_days):
+            continue
+        if any(_item_matches_constraint(item, constraint) for item in next_items):
+            continue
+        place = await _resolve_brief_target_place(db, target, constraint)
+        if not place:
+            continue
+        slot = str(constraint.get("time_slot") or "").strip() or _default_slot_for_constraint(constraint)
+        next_items.append(_item_from_resolved_place(place, slot=slot, language=language))
+        changed = True
+    if not changed:
+        return next_items
+    return sorted(
+        next_items,
+        key=lambda item: (
+            _parse_clock_minutes(item.get("start_time")) is None,
+            _parse_clock_minutes(item.get("start_time")) or 0,
+            0 if item.get("slotLockReason") else 1,
+        ),
+    )
+
+
+def _compact_required_route_items(items: list[dict[str, Any]], preference_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict):
+        return items
+    compact_source = _compact_source_text(str(brief.get("source_text") or ""))
+    if any(
+        token in compact_source
+        for token in (
+            "\uac77\ub294\ucf54\uc2a4",
+            "\ubb34\ub9ac\uc5c6\ub294\ub3d9\uc120",
+            "\ub3d9\uc120",
+            "\ub3c4\ubcf4",
+            "\uac78\uc5b4",
+        )
+    ):
+        compact_source = f"{compact_source}routecompact"
+    if not any(token in compact_source for token in ("걷는코스", "무리없는동선", "동선", "도보", "routecompact", "walkingroute")):
+        return items
+    constraints = [constraint for constraint in brief.get("place_constraints") or [] if isinstance(constraint, dict)]
+    required = [str(value) for value in brief.get("must_include") or [] if str(value).strip()]
+    if len(required) < 2:
+        return items
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        if any(
+            _item_matches_constraint(
+                item,
+                next(
+                    (
+                        constraint
+                        for constraint in constraints
+                        if str(constraint.get("target") or "") == target
+                        or _compact_source_text(str(constraint.get("target") or "")) == _compact_source_text(target)
+                    ),
+                    {"target": target},
+                ),
+            )
+            for target in required
+        ):
+            kept.append(item)
+    if len(kept) >= 2:
+        return kept
+    return items
+
+
+async def _resolve_brief_target_place(
+    db: AsyncIOMotorDatabase,
+    target: str,
+    constraint: dict[str, Any],
+) -> dict[str, Any] | None:
+    queries: list[str] = []
+    canonical = str(constraint.get("canonical") or "").strip()
+    queries.append(target)
+    if canonical in _SCOPED_DAYPART_ALIASES:
+        queries.extend(_SCOPED_DAYPART_ALIASES[canonical])
+    for query in dict.fromkeys(queries):
+        try:
+            from parser_api.services.place_catalog import resolve_place as resolve_catalog_place
+
+            catalog_place = resolve_catalog_place(query)
+        except Exception:
+            catalog_place = None
+        if isinstance(catalog_place, dict):
+            return catalog_place
+        try:
+            place = await resolve_place(db, query, fallback_coordinates=PARIS_CENTER)
+        except Exception:
+            place = None
+        if isinstance(place, dict) and place.get("coordinates"):
+            return place
+    return None
+
+
+def _canonical_from_target_text(target: str) -> str | None:
+    compact = _compact_source_text(target)
+    if not compact:
+        return None
+    for canonical, aliases in _SCOPED_DAYPART_ALIASES.items():
+        if any((alias_value := _compact_source_text(alias)) and alias_value in compact for alias in aliases):
+            return canonical
+    return None
+
+
+def _item_from_resolved_place(place: dict[str, Any], *, slot: str, language: str) -> dict[str, Any]:
+    normalized_slot = "evening" if slot == "night" else slot if slot in _STRUCTURED_SLOT_MINUTES else "afternoon"
+    minutes = _STRUCTURED_SLOT_MINUTES.get(slot, _STRUCTURED_SLOT_MINUTES.get(normalized_slot, 13 * 60 + 30))
+    return {
+        "id": str(uuid4()),
+        "itemKind": "stop",
+        "title": place.get("name") or "Paris stop",
+        "time_slot": normalized_slot,
+        "start_time": _format_clock(minutes),
+        "place": {
+            "place_id": place.get("slug") or place.get("place_id"),
+            "slug": place.get("slug") or place.get("place_id"),
+            "name": place.get("name") or "Paris stop",
+            "category": place.get("category") or "landmark",
+            "coordinates": place.get("coordinates") or PARIS_CENTER,
+            "cuisine": place.get("cuisine"),
+            "rating": place.get("rating"),
+            "review_count": place.get("review_count"),
+        },
+        "description": place.get("short_description") or "Added by the Agent to satisfy a required stop.",
+        "estimated_duration": place.get("estimated_visit_duration") or _format_duration_minutes(75, language),
+        "slotLockReason": "brief_must_include_anchor",
+        "slotTags": ["must_include"],
+    }
+
+
+def _default_slot_for_constraint(constraint: dict[str, Any]) -> str:
+    canonical = str(constraint.get("canonical") or "")
+    if canonical in {"seine", "eiffel", "arc", "jazz"}:
+        return "evening"
+    if canonical in {"louvre", "orsay", "notre", "sainte"}:
+        return "morning"
+    return "afternoon"
 
 
 def _nearest_neighbor_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -325,12 +966,30 @@ def _dedupe_items_by_place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _item_place_keys(item: dict[str, Any]) -> set[str]:
     place = item.get("place") or {}
     keys: set[str] = set()
-    place_id = str(place.get("place_id") or "").strip().lower()
+    place_id = str(place.get("place_id") or place.get("slug") or "").strip().lower()
     if place_id:
         keys.add(f"id:{place_id}")
     name = str(place.get("name") or item.get("title") or "").strip().lower()
     if name:
         keys.add(f"name:{name}")
+    category = str(place.get("category") or "").lower()
+    if category not in MEAL_PLACE_CATEGORIES:
+        item_text = _compact_source_text(
+            " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(place.get("name") or ""),
+                    str(place.get("slug") or place.get("place_id") or ""),
+                ]
+            )
+        )
+        for canonical, aliases in _SCOPED_DAYPART_ALIASES.items():
+            if canonical == "arc" and "arcdetriomphe" not in item_text:
+                continue
+            if canonical == "garnier" and "garnier" not in item_text and "palaisgarnier" not in item_text:
+                continue
+            if any((alias := _compact_source_text(alias_value)) and alias in item_text for alias_value in aliases):
+                keys.add(f"canonical:{canonical}")
     coordinates = place.get("coordinates") or {}
     try:
         coordinate_key = f"{float(coordinates.get('lat')):.4f},{float(coordinates.get('lng')):.4f}"
@@ -402,7 +1061,13 @@ async def _with_meal_stops(
 
 
 def _normalize_scheduled_time_slot(item: dict[str, Any], role: str, start_minutes: int) -> str:
+    if role in {"cafe", "restaurant", "meal_placeholder"} and _is_lunch_item(item) and start_minutes < 15 * 60:
+        if _is_brunch_item(item) and start_minutes < 12 * 60:
+            return "morning"
+        return "lunch"
     if role in {"restaurant", "meal_placeholder"}:
+        if _is_lunch_item(item) and _is_brunch_item(item) and start_minutes < 12 * 60:
+            return "morning"
         return "lunch" if _is_lunch_item(item) and start_minutes < 15 * 60 else "evening"
     if start_minutes < 12 * 60:
         return "morning"
@@ -441,6 +1106,861 @@ async def _meal_item(
         "description": description,
         "estimated_duration": _copy(language, "1 hour", "1시간"),
     }
+
+
+async def _ensure_requested_meal_anchors(
+    db: AsyncIOMotorDatabase,
+    items: list[dict[str, Any]],
+    language: str,
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not items:
+        return items
+
+    used_names = {str(item.get("place", {}).get("name") or item.get("title") or "").lower() for item in items}
+
+    if _prefers_general_meal(preference_profile) and not _has_restaurant_anchor(items):
+        anchor = _meal_anchor(items, min(1, len(items) - 1))
+        lunch = await _meal_item(db, anchor, "lunch", language, used_names)
+        if lunch:
+            lunch = dict(lunch)
+            if lunch.get("nearbyMealNeeded") or str((lunch.get("place") or {}).get("category") or "") == "meal_placeholder":
+                lunch["place"] = {
+                    "name": "Paris neighborhood restaurant",
+                    "category": "restaurant",
+                    "cuisine": ["french", "bistro"],
+                    "coordinates": dict(anchor),
+                    "tags": ["restaurant", "lunch"],
+                }
+                lunch["title"] = _copy(language, "Paris neighborhood restaurant lunch", "Paris neighborhood restaurant lunch")
+            lunch["time_slot"] = "lunch"
+            lunch["start_time"] = str(lunch.get("start_time") or "12:30")
+            lunch["description"] = _meal_description(
+                "lunch",
+                language,
+                preference_profile,
+                next_stop=items[min(1, len(items) - 1)] if items else None,
+            )
+            insert_index = min(max(1, len(items) // 2), len(items))
+            items = [*items[:insert_index], lunch, *items[insert_index:]]
+            used_names.add(str((lunch.get("place") or {}).get("name") or lunch.get("title") or "").lower())
+
+    if not _prefers_french_dinner(preference_profile) or _has_evening_meal(items):
+        return items
+
+    anchor = _meal_anchor(items, max(0, len(items) - 2))
+    dinner = await _meal_item(db, anchor, "dinner", language, used_names)
+    if not dinner:
+        return items
+
+    dinner = dict(dinner)
+    if dinner.get("nearbyMealNeeded") or str((dinner.get("place") or {}).get("category") or "") == "meal_placeholder":
+        dinner = _fallback_french_dinner_item(anchor, language)
+    place_name = str((dinner.get("place") or {}).get("name") or dinner.get("title") or "").strip()
+    if place_name and not _is_dinner_item(dinner):
+        dinner["title"] = _copy(language, f"{place_name} dinner", f"{place_name} 저녁")
+    dinner["description"] = _meal_description("dinner", language, preference_profile, next_stop=items[-1] if len(items) > 1 else None)
+    dinner["time_slot"] = "evening"
+    dinner["start_time"] = str(dinner.get("start_time") or "18:35")
+    insert_index = max(1, len(items) - 1)
+    return [*items[:insert_index], dinner, *items[insert_index:]]
+
+
+def _ensure_requested_cafe_anchor(
+    items: list[dict[str, Any]],
+    language: str,
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not items or not _prefers_cafe_break(preference_profile):
+        return items
+    if any(_role_key(item) == "cafe" for item in items):
+        if _afternoon_cafe_requested(preference_profile) and not any(
+            _role_key(item) == "cafe" and str(item.get("time_slot") or "") == "afternoon"
+            for item in items
+        ):
+            adjusted = [dict(item) for item in items]
+            for item in adjusted:
+                if _role_key(item) == "cafe":
+                    item["time_slot"] = "afternoon"
+                    item["start_time"] = "15:05"
+                    item["slotLockReason"] = "requested_cafe_time"
+                    break
+            return adjusted
+        return items
+
+    anchor_index = 0 if len(items) == 1 else min(1, len(items) - 1)
+    anchor = _coordinates(items[anchor_index])
+    cafe = {
+        "id": str(uuid4()),
+        "time_slot": "afternoon",
+        "start_time": "15:05",
+        "title": _copy(language, "Paris cafe stop", "파리 카페 타임"),
+        "place": {
+            "name": _copy(language, "Paris cafe stop", "파리 카페 타임"),
+            "category": "cafe",
+            "cuisine": ["cafe", "coffee"],
+            "coordinates": dict(anchor),
+            "tags": ["cafe", "coffee", "relax"],
+        },
+        "description": _copy(
+            language,
+            "A cafe pause added because the user explicitly asked for cafe time.",
+            "사용자가 카페 시간을 요청해 동선 중간에 넣은 휴식형 카페 구간입니다.",
+        ),
+        "estimated_duration": _copy(language, "1 hour", "1시간"),
+        "slotTags": ["cafe", "coffee", "relax"],
+    }
+    insert_at = min(len(items), anchor_index + 1)
+    return [*items[:insert_at], cafe, *items[insert_at:]]
+
+
+def _afternoon_cafe_requested(preference_profile: dict[str, Any]) -> bool:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if "afternoon" not in {str(value) for value in (brief or {}).get("preferred_time_slots") or []}:
+        return False
+    compact = _compact_source_text(str((brief or {}).get("source_text") or ""))
+    return any(token in compact for token in ("\uc624\ud6c4\uce74\ud398", "\uce74\ud398\uc640\uc0b0\ucc45", "afternooncafe"))
+
+
+def _prefers_cafe_break(preference_profile: dict[str, Any]) -> bool:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    meal_preferences = {str(value).lower() for value in (brief or {}).get("meal_preference") or []}
+    style_tags = {str(value).lower() for value in preference_profile.get("style_tags") or []} if isinstance(preference_profile, dict) else set()
+    return bool(meal_preferences.intersection({"cafe", "coffee", "dessert", "bakery", "brunch"})) or bool(style_tags.intersection({"cafe", "foodie", "dessert"}))
+
+
+def _prefers_general_meal(preference_profile: dict[str, Any]) -> bool:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    meal_preferences = {str(value).lower() for value in (brief or {}).get("meal_preference") or []}
+    style_tags = {str(value).lower() for value in preference_profile.get("style_tags") or []} if isinstance(preference_profile, dict) else set()
+    return bool(meal_preferences.intersection({"meal_preference", "meal", "restaurant", "food", "dining"})) or "foodie" in style_tags
+
+
+def _has_restaurant_anchor(items: list[dict[str, Any]]) -> bool:
+    for item in items:
+        place = item.get("place") or {}
+        category = str(place.get("category") or "").lower()
+        if category in {"restaurant", "bistro", "brasserie"}:
+            return True
+        if _role_key(item) == "restaurant" and category not in {"cafe", "bakery"}:
+            return True
+    return False
+
+
+def _fallback_french_dinner_item(anchor: dict[str, float], language: str) -> dict[str, Any]:
+    return {
+        "id": str(uuid4()),
+        "time_slot": "evening",
+        "start_time": "18:35",
+        "title": _copy(language, "Local bistro dinner", "로컬 비스트로 저녁"),
+        "place": {
+            "name": _copy(language, "Local Paris Bistro", "로컬 파리 비스트로"),
+            "category": "restaurant",
+            "cuisine": ["french", "bistro"],
+            "coordinates": dict(anchor),
+        },
+        "description": _copy(
+            language,
+            "A French bistro-style dinner anchor added to satisfy the requested local evening mood.",
+            "요청한 로컬 비스트로 분위기를 맞추기 위해 넣은 프렌치 저녁 식사 앵커입니다.",
+        ),
+        "estimated_duration": _copy(language, "1 hour 30 minutes", "1시간 30분"),
+    }
+
+
+def _prefers_french_dinner(preference_profile: dict[str, Any]) -> bool:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    meal_preferences = {str(value).lower() for value in (brief or {}).get("meal_preference") or []}
+    style_tags = {str(value).lower() for value in preference_profile.get("style_tags") or []} if isinstance(preference_profile, dict) else set()
+    return bool(meal_preferences.intersection({"french", "bistro", "brasserie", "romantic"})) or "french" in style_tags
+
+
+def _has_evening_meal(items: list[dict[str, Any]]) -> bool:
+    for item in items:
+        if str(item.get("time_slot") or "") != "evening":
+            continue
+        place = item.get("place") or {}
+        category = str(place.get("category") or "").lower()
+        if category in MEAL_PLACE_CATEGORIES or _is_dinner_item(item):
+            return True
+    return False
+
+
+_FINAL_ANCHOR_ALIASES: dict[str, tuple[str, ...]] = {
+    "eiffel": ("eiffel", "eiffeltower", "toureiffel", "\uc5d0\ud3a0", "\uc5d0\ud3a0\ud0d1"),
+    "arc": ("arc", "arcdetriomphe", "triomphe", "\uac1c\uc120\ubb38"),
+    "seine": ("seine", "seineriver", "\uc13c\uac15"),
+    "jazz": ("jazz", "jazzbar", "caveaudelahuchette", "huchette", "\uc7ac\uc988", "\uc7ac\uc988\ubc14", "\uc704\uc158\ud2b8"),
+    "montmartre": ("montmartre", "sacrecoeur", "\ubabd\ub9c8\ub974\ud2b8\ub974", "\ubabd\ub9c8\ub974\ud2b8", "\uc0ac\ud06c\ub808\ucf8c\ub974"),
+}
+_FINAL_ANCHOR_CUES = ("finish", "final", "end", "\ub9c8\ubb34\ub9ac", "\ub9c8\uc9c0\ub9c9", "\ub05d")
+_FINAL_ANCHOR_AVOID_CUES = ("avoid", "skip", "exclude", "without", "\ub9d0\uace0", "\ube7c", "\uc81c\uc678", "\uac00\uc9c0\ub9c8")
+_FINAL_ANCHOR_NIGHT_CUES = ("night", "nightview", "night_view", "sparkling", "\uc57c\uacbd", "\ubc24", "\uc57c\uac04", "\uc11d\uc591", "\uc120\uc14b", "sunset")
+_SCOPED_DAYPART_ALIASES: dict[str, tuple[str, ...]] = {
+    "louvre": ("louvre", "louvremuseum", "\ub8e8\ube0c\ub974"),
+    "orsay": ("orsay", "museedorsay", "dorsay", "\uc624\ub974\uc138"),
+    "notre": ("notredame", "notredamecathedral", "\ub178\ud2b8\ub974\ub2f4"),
+    "sainte": ("saintechapelle", "saintechapelle", "saintchapelle", "chapelle", "\uc0dd\ud2b8\uc0e4\ud3a0"),
+    "marais": ("marais", "lemarais", "\ub9c8\ub808"),
+    "montmartre": _FINAL_ANCHOR_ALIASES["montmartre"],
+    "eiffel": _FINAL_ANCHOR_ALIASES["eiffel"],
+    "arc": _FINAL_ANCHOR_ALIASES["arc"],
+    "champs": ("champselysees", "avenuedeschampselysees", "\uc0f9\uc824\ub9ac\uc81c", "\uc0f9\uc824\ub9ac\uc81c\uac70\ub9ac"),
+    "seine": _FINAL_ANCHOR_ALIASES["seine"],
+    "garnier": ("palaisgarnier", "operagarnier", "opera", "garnier", "\uc624\ud398\ub77c", "\uac00\ub974\ub2c8\uc5d0"),
+    "palais_royal": ("palaisroyal", "\ud314\ub808\ub8e8\uc544\uc584"),
+    "jazz": _FINAL_ANCHOR_ALIASES["jazz"],
+}
+_MORNING_CUES = ("morning", "breakfast", "\uc624\uc804", "\uc544\uce68")
+_AFTERNOON_CUES = ("afternoon", "\uc624\ud6c4", "\ub0ae", "\ub2a6\uc740\uc624\ud6c4")
+_STRUCTURED_SLOT_MINUTES = {
+    "morning": 9 * 60 + 15,
+    "lunch": 12 * 60 + 30,
+    "afternoon": 13 * 60 + 30,
+    "evening": 18 * 60 + 15,
+    "night": 20 * 60 + 30,
+}
+
+
+def _move_final_anchor_to_end(items: list[dict[str, Any]], preference_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    if len(items) < 2:
+        return items
+    anchor_kind = _requested_final_anchor_kind(preference_profile)
+    if not anchor_kind:
+        return items
+
+    items = _drop_unrequested_night_view_fillers(items, anchor_kind, preference_profile)
+    items = _apply_scoped_daypart_times(items, preference_profile)
+    anchor_index = next((index for index, item in enumerate(items) if _is_final_anchor_item(item, anchor_kind)), None)
+    if anchor_index is None:
+        return items
+
+    final_item = dict(items[anchor_index])
+    final_item["time_slot"] = "evening"
+    final_item["start_time"] = _final_anchor_start_time(anchor_kind, preference_profile, final_item)
+    final_item["isNightViewSpot"] = True
+    original_lock_reason = str(final_item.get("slotLockReason") or "").strip()
+    if original_lock_reason and original_lock_reason != "final_night_anchor":
+        final_item["slotLockLabel"] = original_lock_reason
+    final_item["slotLockReason"] = "final_night_anchor"
+    final_item["finalAnchor"] = True
+    final_item["finalAnchorKind"] = anchor_kind
+
+    reordered = [*items[:anchor_index], *items[anchor_index + 1 :], final_item]
+    reordered = _rebalance_museum_day_before_final_anchor(reordered, preference_profile)
+    return _tighten_evening_anchors_before_final(reordered)
+
+
+def _drop_unrequested_night_view_fillers(
+    items: list[dict[str, Any]],
+    final_anchor_kind: str,
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    requested_text = _compact_source_text(" ".join(str(value) for value in (brief or {}).get("must_include") or []))
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        item_anchor_kind = _anchor_kind_for_item(item)
+        if item_anchor_kind == final_anchor_kind:
+            filtered.append(item)
+            continue
+        if item_anchor_kind and _is_optional_night_view_filler(item) and not _anchor_kind_requested(item_anchor_kind, requested_text):
+            continue
+        if _is_optional_evening_filler(item) and not _is_marked_must_include(item):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _anchor_kind_for_item(item: dict[str, Any]) -> str | None:
+    for kind in _FINAL_ANCHOR_ALIASES:
+        if _is_final_anchor_item(item, kind):
+            return kind
+    return None
+
+
+def _anchor_kind_requested(anchor_kind: str, requested_text: str) -> bool:
+    return any(_compact_source_text(alias) in requested_text for alias in _FINAL_ANCHOR_ALIASES.get(anchor_kind, ()))
+
+
+def _is_optional_night_view_filler(item: dict[str, Any]) -> bool:
+    if _role_key(item) == "night_view":
+        return True
+    return bool(item.get("isNightViewSpot") or item.get("slotLockReason"))
+
+
+def _is_optional_evening_filler(item: dict[str, Any]) -> bool:
+    if _role_key(item) in {"restaurant", "cafe", "meal_placeholder", "museum", "cathedral"}:
+        return False
+    if str(item.get("time_slot") or "") != "evening" and (_parse_clock_minutes(item.get("start_time")) or 0) < EVENING_START_MINUTES:
+        return False
+    place = item.get("place") or {}
+    category = str(place.get("category") or "").lower()
+    return category in {"landmark", "neighborhood", "park", "garden"}
+
+
+def _is_marked_must_include(item: dict[str, Any]) -> bool:
+    slot_tags = item.get("slotTags") or item.get("slot_tags") or []
+    if not isinstance(slot_tags, list):
+        slot_tags = [slot_tags]
+    return any(str(tag).lower() == "must_include" for tag in slot_tags)
+
+
+def _rebalance_museum_day_before_final_anchor(items: list[dict[str, Any]], preference_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    if len(items) < 4:
+        return items
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    meal_preferences = {str(value).lower() for value in (brief or {}).get("meal_preference") or []}
+    if meal_preferences.intersection({"brunch", "breakfast"}):
+        return items
+
+    final_item = items[-1]
+    pre_final = list(items[:-1])
+    museums = [item for item in pre_final if _role_key(item) == "museum"]
+    if len(museums) < 2:
+        return items
+
+    museum_ids = {id(item) for item in museums}
+    lunches = [item for item in pre_final if id(item) not in museum_ids and _is_lunch_item(item)]
+    dinners = [
+        item
+        for item in pre_final
+        if id(item) not in museum_ids
+        and id(item) not in {id(lunch) for lunch in lunches}
+        and _role_key(item) == "restaurant"
+        and not _is_lunch_item(item)
+    ]
+    others = [
+        item
+        for item in pre_final
+        if id(item) not in museum_ids
+        and id(item) not in {id(lunch) for lunch in lunches}
+        and id(item) not in {id(dinner) for dinner in dinners}
+    ]
+
+    ordered: list[dict[str, Any]] = []
+    first_museum = dict(museums[0])
+    first_museum["time_slot"] = "morning"
+    first_museum["start_time"] = "09:45"
+    ordered.append(first_museum)
+    if lunches:
+        lunch = dict(lunches[0])
+        lunch["time_slot"] = "lunch"
+        lunch["start_time"] = "12:35"
+        ordered.append(lunch)
+    for offset, museum in enumerate(museums[1:], start=0):
+        museum_item = dict(museum)
+        museum_item["time_slot"] = "afternoon"
+        museum_item["start_time"] = _format_clock(14 * 60 + offset * 100)
+        ordered.append(museum_item)
+    ordered.extend(others)
+    for dinner in dinners:
+        dinner_item = dict(dinner)
+        dinner_item["time_slot"] = "evening"
+        dinner_item["start_time"] = "18:30"
+        ordered.append(dinner_item)
+    ordered.append(final_item)
+    return ordered
+
+
+def _requested_final_anchor_kind(preference_profile: dict[str, Any]) -> str | None:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    explicit_final = str((brief or {}).get("final_anchor") or "").strip()
+    explicit_canonical = _canonical_from_target_text(explicit_final)
+    if explicit_canonical in _FINAL_ANCHOR_ALIASES:
+        return explicit_canonical
+    source_text = str((brief or {}).get("source_text") or "")
+    compact = _compact_source_text(source_text)
+    if not compact:
+        return None
+
+    scored: list[tuple[int, str]] = []
+    for kind, aliases in _FINAL_ANCHOR_ALIASES.items():
+        score = _scoped_cue_distance(compact, aliases, _FINAL_ANCHOR_CUES)
+        if score is not None:
+            scored.append((score, kind))
+    if not scored:
+        for kind, aliases in _FINAL_ANCHOR_ALIASES.items():
+            score = _scoped_cue_distance(compact, aliases, _FINAL_ANCHOR_NIGHT_CUES)
+            if score is not None:
+                scored.append((score + 100, kind))
+    if not scored:
+        return None
+    scored.sort()
+    return scored[0][1]
+
+
+def _final_anchor_start_time(anchor_kind: str, preference_profile: dict[str, Any], item: dict[str, Any]) -> str:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    source_text = str((brief or {}).get("source_text") or "")
+    aliases = _FINAL_ANCHOR_ALIASES.get(anchor_kind, ())
+    if anchor_kind == "jazz":
+        return "21:15"
+    if _scoped_cue_distance(_compact_source_text(source_text), aliases, ("night", "nightview", "\uc57c\uacbd", "\ubc24", "\uc57c\uac04")) is not None:
+        return "20:15"
+    preferred = _parse_clock_minutes(item.get("start_time"))
+    if preferred is not None and EVENING_START_MINUTES <= preferred < 20 * 60:
+        return _format_clock(preferred)
+    return "18:50"
+
+
+def _compact_source_text(value: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z\uac00-\ud7a3]+", "", str(value or "")).lower()
+
+
+def _scoped_cue_distance(
+    compact_text: str,
+    aliases: tuple[str, ...],
+    cues: tuple[str, ...],
+    *,
+    before: int = 6,
+    after: int = 30,
+    respect_avoid: bool = True,
+) -> int | None:
+    alias_values = [_compact_source_text(alias) for alias in aliases if _compact_source_text(alias)]
+    cue_values = [_compact_source_text(cue) for cue in cues if _compact_source_text(cue)]
+    avoid_values = [_compact_source_text(cue) for cue in _FINAL_ANCHOR_AVOID_CUES if _compact_source_text(cue)]
+    best: int | None = None
+    for alias in alias_values:
+        start = compact_text.find(alias)
+        while start >= 0:
+            avoid_after_window = compact_text[start + len(alias) : start + len(alias) + 10]
+            avoid_before_window = compact_text[max(0, start - 12) : start]
+            avoid_after = any(cue in avoid_after_window for cue in avoid_values)
+            english_avoid_before = any(cue in avoid_before_window for cue in ("avoid", "without", "skip", "exclude"))
+            if not respect_avoid or not (avoid_after or english_avoid_before):
+                window_start = max(0, start - before)
+                window = compact_text[window_start : start + len(alias) + after]
+                for cue in cue_values:
+                    cue_index = window.find(cue)
+                    if cue_index >= 0:
+                        absolute_cue_index = window_start + cue_index
+                        distance = abs(absolute_cue_index - start)
+                        best = distance if best is None else min(best, distance)
+            start = compact_text.find(alias, start + len(alias))
+    return best
+
+
+def _is_final_anchor_item(item: dict[str, Any], anchor_kind: str) -> bool:
+    return _item_matches_aliases(item, _FINAL_ANCHOR_ALIASES.get(anchor_kind, ()))
+
+
+def _item_matches_aliases(item: dict[str, Any], aliases: tuple[str, ...]) -> bool:
+    place = item.get("place") or {}
+    text = _compact_source_text(
+        " ".join(
+            [
+                str(item.get("title") or ""),
+                str(place.get("name") or ""),
+                str(place.get("slug") or place.get("place_id") or ""),
+            ]
+        )
+    )
+    alias_values = [_compact_source_text(token) for token in aliases if _compact_source_text(token)]
+    for alias in alias_values:
+        if alias == "arc" and "arcdetriomphe" not in text:
+            continue
+        if alias == "opera" and "garnier" not in text and "palaisgarnier" not in text:
+            continue
+        if alias in text:
+            return True
+    return False
+
+
+def _apply_scoped_daypart_times(items: list[dict[str, Any]], preference_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    compact = _compact_source_text(str((brief or {}).get("source_text") or ""))
+    if not compact:
+        return items
+
+    morning_offset = 0
+    afternoon_offset = 0
+    adjusted: list[dict[str, Any]] = []
+    changed = False
+    for item in items:
+        next_item = item
+        for aliases in _SCOPED_DAYPART_ALIASES.values():
+            if not _item_matches_aliases(item, aliases):
+                continue
+            morning_after_score = _scoped_cue_after_alias(compact, aliases, _MORNING_CUES, after=12)
+            afternoon_after_score = _scoped_cue_after_alias(compact, aliases, _AFTERNOON_CUES, after=12)
+            morning_score = _scoped_cue_distance(compact, aliases, _MORNING_CUES, before=16, after=16, respect_avoid=False)
+            afternoon_score = _scoped_cue_distance(compact, aliases, _AFTERNOON_CUES, before=16, after=16, respect_avoid=False)
+            if afternoon_after_score is not None and (morning_after_score is None or afternoon_after_score <= morning_after_score):
+                next_item = dict(item)
+                next_item["time_slot"] = "afternoon"
+                next_item["start_time"] = _format_clock((13 * 60 + 30) + afternoon_offset * 85)
+                next_item["slotLockReason"] = next_item.get("slotLockReason") or "scoped_daypart"
+                afternoon_offset += 1
+                changed = True
+                break
+            if morning_after_score is not None:
+                next_item = dict(item)
+                next_item["time_slot"] = "morning"
+                next_item["start_time"] = _format_clock(9 * 60 + 15 + morning_offset * 85)
+                next_item["slotLockReason"] = next_item.get("slotLockReason") or "scoped_daypart"
+                morning_offset += 1
+                changed = True
+                break
+            if morning_score is not None and (afternoon_score is None or morning_score <= afternoon_score):
+                next_item = dict(item)
+                next_item["time_slot"] = "morning"
+                next_item["start_time"] = _format_clock(9 * 60 + 15 + morning_offset * 85)
+                next_item["slotLockReason"] = next_item.get("slotLockReason") or "scoped_daypart"
+                morning_offset += 1
+                changed = True
+                break
+            if afternoon_score is not None:
+                next_item = dict(item)
+                next_item["time_slot"] = "afternoon"
+                next_item["start_time"] = _format_clock((13 * 60 + 30) + afternoon_offset * 85)
+                next_item["slotLockReason"] = next_item.get("slotLockReason") or "scoped_daypart"
+                afternoon_offset += 1
+                changed = True
+                break
+        adjusted.append(next_item)
+    if not changed:
+        return items
+    return sorted(
+        adjusted,
+        key=lambda item: (
+            _parse_clock_minutes(item.get("start_time")) is None,
+            _parse_clock_minutes(item.get("start_time")) or 0,
+            0 if item.get("slotLockReason") == "scoped_daypart" else 1,
+        ),
+    )
+
+
+def _apply_structured_place_constraints(items: list[dict[str, Any]], preference_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    if not isinstance(brief, dict):
+        return items
+    constraints = [constraint for constraint in brief.get("place_constraints") or [] if isinstance(constraint, dict)]
+    ordered_anchors = [str(value) for value in brief.get("ordered_anchors") or [] if str(value).strip()]
+    final_anchor = str(brief.get("final_anchor") or "").strip()
+    if not constraints and not ordered_anchors and not final_anchor:
+        return items
+
+    slot_offsets = {"morning": 0, "lunch": 0, "afternoon": 0, "evening": 0, "night": 0}
+    adjusted: list[dict[str, Any]] = []
+    changed = False
+    for item in items:
+        next_item = dict(item)
+        constraint = next(
+            (
+                constraint
+                for constraint in constraints
+                if str(constraint.get("intent") or "") != "avoid"
+                and _item_matches_constraint(next_item, constraint)
+            ),
+            None,
+        )
+        if constraint:
+            slot = str(constraint.get("time_slot") or "").strip()
+            if slot in _STRUCTURED_SLOT_MINUTES:
+                normalized_slot = "evening" if slot == "night" else slot
+                minutes = _STRUCTURED_SLOT_MINUTES[slot] + slot_offsets[slot] * 85
+                slot_offsets[slot] += 1
+                next_item["time_slot"] = normalized_slot
+                next_item["start_time"] = _format_clock(minutes)
+                next_item["slotLockReason"] = "structured_place_constraint"
+                changed = True
+            if constraint.get("final") or (final_anchor and _item_matches_constraint(next_item, {"target": final_anchor})):
+                next_item["finalAnchor"] = True
+                next_item["finalAnchorKind"] = str(constraint.get("canonical") or final_anchor or constraint.get("target") or "")
+                next_item["time_slot"] = "evening"
+                next_item["start_time"] = _format_clock(max(_parse_clock_minutes(next_item.get("start_time")) or 0, 20 * 60 + 15))
+                next_item["slotLockReason"] = "structured_final_anchor"
+                changed = True
+        adjusted.append(next_item)
+
+    if ordered_anchors:
+        adjusted = _reorder_structured_anchors(adjusted, ordered_anchors)
+        changed = True
+    if not changed:
+        return items
+    return sorted(
+        adjusted,
+        key=lambda item: (
+            _parse_clock_minutes(item.get("start_time")) is None,
+            _parse_clock_minutes(item.get("start_time")) or 0,
+            0 if item.get("slotLockReason") else 1,
+        ),
+    )
+
+
+def _item_matches_constraint(item: dict[str, Any], constraint: dict[str, Any]) -> bool:
+    canonical = str(constraint.get("canonical") or "").strip()
+    target = str(constraint.get("target") or "").strip()
+    aliases: list[str] = []
+    if canonical in _SCOPED_DAYPART_ALIASES:
+        aliases.extend(_SCOPED_DAYPART_ALIASES[canonical])
+    if target:
+        aliases.append(target)
+    return bool(aliases) and _item_matches_aliases(item, tuple(aliases))
+
+
+def _reorder_structured_anchors(items: list[dict[str, Any]], ordered_anchors: list[str]) -> list[dict[str, Any]]:
+    if len(ordered_anchors) < 2:
+        return items
+    remaining = list(items)
+    ordered_items: list[dict[str, Any]] = []
+    for anchor in ordered_anchors:
+        index = next((idx for idx, item in enumerate(remaining) if _item_matches_constraint(item, {"target": anchor})), None)
+        if index is None:
+            continue
+        ordered_items.append(remaining.pop(index))
+    if len(ordered_items) < 2:
+        return items
+    first_anchor_position = min(
+        (idx for idx, item in enumerate(items) if any(item is anchor_item or _item_keyish(item) == _item_keyish(anchor_item) for anchor_item in ordered_items)),
+        default=0,
+    )
+    return [*remaining[:first_anchor_position], *ordered_items, *remaining[first_anchor_position:]]
+
+
+def _item_keyish(item: dict[str, Any]) -> str:
+    place = item.get("place") or {}
+    return _compact_source_text(" ".join(str(value or "") for value in (place.get("slug"), place.get("place_id"), place.get("name"), item.get("title"))))
+
+
+def _scoped_cue_after_alias(
+    compact_text: str,
+    aliases: tuple[str, ...],
+    cues: tuple[str, ...],
+    *,
+    after: int,
+) -> int | None:
+    alias_values = [_compact_source_text(alias) for alias in aliases if _compact_source_text(alias)]
+    cue_values = [_compact_source_text(cue) for cue in cues if _compact_source_text(cue)]
+    best: int | None = None
+    for alias in alias_values:
+        start = compact_text.find(alias)
+        while start >= 0:
+            after_text = compact_text[start + len(alias) : start + len(alias) + after]
+            next_alias_offset = _next_scoped_daypart_alias_offset(after_text)
+            if next_alias_offset >= 0:
+                after_text = after_text[:next_alias_offset]
+            for cue in cue_values:
+                cue_index = after_text.find(cue)
+                if cue_index >= 0:
+                    before_cue = after_text[:cue_index]
+                    if not any(marker in before_cue for marker in ("는", "은", "엔", "에는", "에서", "를", "을")):
+                        continue
+                    if cue_index > 5 or any(token in before_cue for token in ("보고", "이후", "다음", "후에", "뒤")):
+                        continue
+                    best = cue_index if best is None else min(best, cue_index)
+            start = compact_text.find(alias, start + len(alias))
+    return best
+
+
+def _next_scoped_daypart_alias_offset(text: str) -> int:
+    offsets = [
+        text.find(alias_value)
+        for aliases in _SCOPED_DAYPART_ALIASES.values()
+        for alias in aliases
+        if (alias_value := _compact_source_text(alias)) and alias_value in text
+    ]
+    return min(offsets) if offsets else -1
+
+
+_ORDER_SIGNAL_CUES = ("순서", "그다음", "그다음에", "다음", "이후", "후", "뒤", "after", "then")
+_ORDER_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
+    "brunch": ("brunch", "\ube0c\ub7f0\uce58"),
+    "cafe": ("cafe", "coffee", "\uce74\ud398"),
+    "louvre": _SCOPED_DAYPART_ALIASES["louvre"],
+    "orsay": _SCOPED_DAYPART_ALIASES["orsay"],
+    "notre": _SCOPED_DAYPART_ALIASES["notre"],
+    "sainte": _SCOPED_DAYPART_ALIASES["sainte"],
+    "marais": _SCOPED_DAYPART_ALIASES["marais"],
+    "montmartre": _SCOPED_DAYPART_ALIASES["montmartre"],
+    "tuileries": ("tuileries", "\ud280\ub974\ub9ac"),
+    "luxembourg": ("luxembourg", "뤽상부르", "룩셈부르크"),
+    "seine": _SCOPED_DAYPART_ALIASES["seine"],
+    "eiffel": _SCOPED_DAYPART_ALIASES["eiffel"],
+    "arc": _SCOPED_DAYPART_ALIASES["arc"],
+    "garnier": _SCOPED_DAYPART_ALIASES["garnier"],
+    "palais_royal": _SCOPED_DAYPART_ALIASES["palais_royal"],
+    "jazz": _SCOPED_DAYPART_ALIASES["jazz"],
+    "dinner": ("dinner", "\ub514\ub108", "\uc800\ub141"),
+}
+
+
+def _apply_explicit_source_order(
+    items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+    *,
+    keep_final: bool = False,
+) -> list[dict[str, Any]]:
+    if len(items) < 2:
+        return items
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    compact = _compact_source_text(str((brief or {}).get("source_text") or ""))
+    if not compact or not any(_compact_source_text(cue) in compact for cue in _ORDER_SIGNAL_CUES):
+        return items
+
+    tail: list[dict[str, Any]] = []
+    working = list(items)
+    if keep_final and working and _is_locked_final_anchor(working[-1]):
+        tail = [working.pop()]
+
+    positioned: list[tuple[int, int, dict[str, Any]]] = []
+    unpositioned: list[tuple[int, dict[str, Any]]] = []
+    for index, item in enumerate(working):
+        position = _source_order_position(item, compact)
+        if position is None:
+            unpositioned.append((index, item))
+        else:
+            positioned.append((position, index, item))
+    if len(positioned) < 2:
+        return items
+
+    positioned.sort(key=lambda value: (value[0], value[1]))
+    ordered_positioned = [item for _, _, item in positioned]
+    named_indices = {index for _, index, _ in positioned}
+    merged: list[dict[str, Any]] = []
+    inserted = False
+    for index, item in enumerate(working):
+        if index in named_indices:
+            if not inserted:
+                merged.extend(ordered_positioned)
+                inserted = True
+            continue
+        merged.append(item)
+    if not inserted:
+        merged.extend(ordered_positioned)
+    return [*merged, *tail]
+
+
+def _is_locked_final_anchor(item: dict[str, Any]) -> bool:
+    return bool(item.get("finalAnchor")) or str(item.get("slotLockReason") or "") == "final_night_anchor"
+
+
+def _source_order_position(item: dict[str, Any], compact_source: str) -> int | None:
+    candidates: list[int] = []
+    for key, aliases in _ORDER_TOKEN_ALIASES.items():
+        if key == "brunch" and not _is_brunch_item(item):
+            continue
+        if key == "cafe" and _role_key(item) != "cafe":
+            continue
+        if key == "dinner" and not _is_dinner_item(item):
+            continue
+        if key not in {"brunch", "cafe", "dinner"} and not _item_matches_aliases(item, aliases):
+            continue
+        alias_positions = [
+            compact_source.find(alias_value)
+            for alias in aliases
+            if (alias_value := _compact_source_text(alias)) and compact_source.find(alias_value) >= 0
+        ]
+        if alias_positions:
+            candidates.append(min(alias_positions))
+    return min(candidates) if candidates else None
+
+
+_NEGATIVE_NIGHT_CUES = (
+    "\uc57c\uacbd\uc740\uc5c6\uc5b4\ub3c4",
+    "\uc57c\uacbd\uc5c6\uc5b4\ub3c4",
+    "\uc57c\uacbd\uc740\ube7c",
+    "\uc57c\uacbd\ube7c",
+    "\uc57c\uacbd\uae4c\uc9c0\ubb34\ub9ac\ud558\uc9c0",
+    "\ubc24\ub2a6\uac8c\uae4c\uc9c0\ubb34\ub9ac",
+    "\ubc24\ub2a6\uc9c0\uc54a\uac8c",
+    "\uc774\ub978\ub9c8\ubb34\ub9ac",
+    "야경은없어도",
+    "야경없어도",
+    "야경은없",
+    "야경없",
+    "야경은빼",
+    "야경빼",
+    "야경말고",
+    "야경대신",
+    "밤일정은빼",
+    "밤일정빼",
+    "밤늦게까지는싫",
+    "밤늦게까지싫",
+)
+
+
+def _drop_negative_night_tail_items(items: list[dict[str, Any]], preference_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    if len(items) < 2:
+        return items
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    compact = _compact_source_text(str((brief or {}).get("source_text") or ""))
+    if not compact or not any(_compact_source_text(cue) in compact for cue in _NEGATIVE_NIGHT_CUES):
+        return items
+    required_text = _compact_source_text(" ".join(str(value) for value in (brief or {}).get("must_include") or []))
+    trimmed = list(items)
+    while len(trimmed) > 1:
+        last = trimmed[-1]
+        preferred = _parse_clock_minutes(last.get("start_time"))
+        if preferred is not None and preferred < 20 * 60:
+            break
+        if _is_marked_must_include(last) or _item_requested_by_brief(last, required_text):
+            break
+        trimmed.pop()
+    return trimmed
+
+
+def _item_requested_by_brief(item: dict[str, Any], compact_required_text: str) -> bool:
+    if not compact_required_text:
+        return False
+    for aliases in [*_FINAL_ANCHOR_ALIASES.values(), *_SCOPED_DAYPART_ALIASES.values()]:
+        if _item_matches_aliases(item, aliases) and any(_compact_source_text(alias) in compact_required_text for alias in aliases):
+            return True
+    place = item.get("place") or {}
+    item_text = _compact_source_text(
+        " ".join(
+            [
+                str(item.get("title") or ""),
+                str(place.get("name") or ""),
+                str(place.get("slug") or place.get("place_id") or ""),
+            ]
+        )
+    )
+    return bool(item_text and item_text in compact_required_text)
+
+
+def _tighten_evening_anchors_before_final(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(items) < 2:
+        return items
+    tightened: list[dict[str, Any]] = []
+    next_anchor_minutes = 18 * 60 + 50
+    for item in items[:-1]:
+        if not _should_pull_evening_anchor_forward(item):
+            tightened.append(item)
+            continue
+        anchor_item = dict(item)
+        anchor_item["time_slot"] = "evening"
+        anchor_item["start_time"] = _format_clock(next_anchor_minutes)
+        anchor_item["isNightViewSpot"] = True
+        tightened.append(anchor_item)
+        next_anchor_minutes += 75
+    tightened.append(items[-1])
+    return tightened
+
+
+def _should_pull_evening_anchor_forward(item: dict[str, Any]) -> bool:
+    role = _role_key(item)
+    if role not in {"night_view", "landmark"} and not item.get("isNightViewSpot") and not item.get("slotLockReason"):
+        return False
+    start_minutes = _parse_clock_minutes(item.get("start_time"))
+    if start_minutes is None or start_minutes < 20 * 60:
+        return False
+    place = item.get("place") or {}
+    category = str(place.get("category") or "").lower()
+    if category in MEAL_PLACE_CATEGORIES:
+        return False
+    text = _compact_source_text(
+        " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("description") or ""),
+                str(place.get("name") or ""),
+                str(place.get("slug") or place.get("place_id") or ""),
+            ]
+        )
+    )
+    return any(token in text for token in ("night", "view", "\uc57c\uacbd", "seine", "\uc13c\uac15", "eiffel", "\uc5d0\ud3a0", "arc", "\uac1c\uc120\ubb38"))
 
 
 def _meal_placeholder_item(anchor: dict[str, float], meal_type: str, language: str) -> dict[str, Any]:
@@ -517,7 +2037,7 @@ def _schedule_day(
 ) -> list[dict[str, Any]]:
     preference_profile = preference_profile or {}
     scheduled_items: list[dict[str, Any]] = []
-    current_minutes = _initial_day_start_minutes(items, pace_level)
+    current_minutes = _initial_day_start_minutes(items, pace_level, preference_profile)
     for index, item in enumerate(items):
         item = dict(item)
         role = _role_key(item)
@@ -527,15 +2047,24 @@ def _schedule_day(
         preferred_start = _preferred_start_minutes(item, role)
         if preferred_start is not None and preferred_start > current_minutes:
             wait_minutes = preferred_start - current_minutes
-            can_pull_forward = wait_minutes >= 60 and role not in {"night_view", "meal_placeholder"}
+            compact_pace = pace_level != "slow"
+            time_anchor = _is_time_anchor_item(item, role)
+            scoped_daypart_anchor = str(item.get("slotLockReason") or "") == "scoped_daypart"
+            gap_threshold = 360 if time_anchor else 240 if scoped_daypart_anchor else 45 if compact_pace else GAP_DISCLOSURE_MINUTES
+            can_pull_forward = (wait_minutes >= 60 or (compact_pace and wait_minutes >= 20)) and not time_anchor and not item.get("slotLockReason")
             if can_pull_forward:
                 preferred_start = current_minutes
                 wait_minutes = 0
-            if wait_minutes >= GAP_DISCLOSURE_MINUTES:
+            if wait_minutes >= gap_threshold:
                 scheduled_items.append(_gap_item(item, current_minutes, preferred_start, preference_profile, language))
             current_minutes = preferred_start
 
-        duration = _stay_duration_minutes(item, role, pace_level)
+        duration = _stay_duration_minutes(
+            item,
+            role,
+            pace_level,
+            low_walking=bool(preference_profile.get("low_walking")),
+        )
         start_minutes = current_minutes
         end_minutes = start_minutes + duration
         item["itemKind"] = "gap" if role == "gap" else "stop"
@@ -548,7 +2077,12 @@ def _schedule_day(
         item["role_label"] = _role_label(role, item, language)
         item["role_icon"] = _role_icon(role)
         item["energy_level"] = ROLE_ENERGY.get(role, 2)
-        item["isNightViewSpot"] = bool(item.get("isNightViewSpot")) or role == "night_view" or bool(item.get("slotLockReason"))
+        item["isNightViewSpot"] = (
+            bool(item.get("isNightViewSpot"))
+            or role == "night_view"
+            or _is_night_view_lock(item)
+            or (_is_late_bar_item(item) and start_minutes >= EVENING_START_MINUTES)
+        )
         item["slotPurpose"] = str(item.get("slotPurpose") or _slot_purpose(item, role, index, len(items), preference_profile, language))
         item["userPreferenceReason"] = str(item.get("userPreferenceReason") or _user_preference_reason(item, role, preference_profile, language))
         item["timeReason"] = str(item.get("timeReason") or _time_reason(item, role, index, len(items), preference_profile, language))
@@ -609,8 +2143,113 @@ def _schedule_day(
         else:
             item["restBufferReason"] = None
             current_minutes = end_minutes
+    scheduled_items = _apply_scheduled_pair_daypart_locks(scheduled_items, preference_profile)
+    scheduled_items = _trim_scheduled_negative_night_tail(scheduled_items, preference_profile)
+    scheduled_items = _trim_scheduled_day_overflow(scheduled_items, language)
     items[:] = scheduled_items
     return items
+
+
+def _trim_scheduled_day_overflow(
+    scheduled_items: list[dict[str, Any]],
+    language: str,
+) -> list[dict[str, Any]]:
+    """Keep generated day schedules inside a human-readable same-day window."""
+
+    if not scheduled_items:
+        return scheduled_items
+
+    bounded: list[dict[str, Any]] = []
+    for item in scheduled_items:
+        start_minutes = _parse_clock_minutes(item.get("start_time"))
+        end_minutes = _parse_clock_minutes(item.get("end_time"))
+        if start_minutes is None:
+            bounded.append(item)
+            continue
+        if start_minutes >= DAY_END_MINUTES:
+            continue
+        next_item = dict(item)
+        if end_minutes is not None and end_minutes > DAY_END_MINUTES:
+            end_minutes = DAY_END_MINUTES
+            duration = max(15, end_minutes - start_minutes)
+            next_item["end_time"] = _format_clock(end_minutes)
+            next_item["duration_minutes"] = duration
+            next_item["estimated_duration"] = _format_duration_minutes(duration, language)
+        if start_minutes > LATEST_STOP_START_MINUTES and next_item.get("itemKind") != "gap":
+            next_item["time_slot"] = "evening"
+            next_item["start_time"] = _format_clock(LATEST_STOP_START_MINUTES)
+            duration = int(next_item.get("duration_minutes") or 45)
+            next_item["end_time"] = _format_clock(min(DAY_END_MINUTES, LATEST_STOP_START_MINUTES + duration))
+        bounded.append(next_item)
+
+    while bounded and bounded[-1].get("itemKind") == "gap":
+        bounded.pop()
+    return bounded or scheduled_items[:1]
+
+
+def _apply_scheduled_pair_daypart_locks(
+    scheduled_items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if len(scheduled_items) < 2:
+        return scheduled_items
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    compact = _compact_source_text(str((brief or {}).get("source_text") or ""))
+    cathedral_pair_morning = (
+        ("notredame" in compact or "노트르담" in compact)
+        and ("saintechapelle" in compact or "생트샤펠" in compact or "생트샤펠" in compact)
+        and any(cue in compact for cue in ("아침", "오전", "morning"))
+    )
+    if not cathedral_pair_morning:
+        return scheduled_items
+
+    adjusted: list[dict[str, Any]] = []
+    morning_index = 0
+    for item in scheduled_items:
+        if item.get("itemKind") != "gap" and (
+            _item_matches_aliases(item, _SCOPED_DAYPART_ALIASES["notre"])
+            or _item_matches_aliases(item, _SCOPED_DAYPART_ALIASES["sainte"])
+        ):
+            next_item = dict(item)
+            start_minutes = 9 * 60 + 15 + morning_index * 85
+            duration = int(next_item.get("duration_minutes") or _stay_duration_minutes(next_item, _role_key(next_item), "normal"))
+            next_item["time_slot"] = "morning"
+            next_item["start_time"] = _format_clock(start_minutes)
+            next_item["end_time"] = _format_clock(start_minutes + duration)
+            next_item["slotLockReason"] = next_item.get("slotLockReason") or "scoped_daypart"
+            morning_index += 1
+            adjusted.append(next_item)
+            continue
+        adjusted.append(item)
+    if morning_index < 2:
+        return scheduled_items
+    return sorted(adjusted, key=lambda item: (_parse_clock_minutes(item.get("start_time")) is None, _parse_clock_minutes(item.get("start_time")) or 0))
+
+
+def _trim_scheduled_negative_night_tail(
+    scheduled_items: list[dict[str, Any]],
+    preference_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if len(scheduled_items) < 2:
+        return scheduled_items
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
+    compact = _compact_source_text(str((brief or {}).get("source_text") or ""))
+    if not compact or not any(_compact_source_text(cue) in compact for cue in _NEGATIVE_NIGHT_CUES):
+        return scheduled_items
+    required_text = _compact_source_text(" ".join(str(value) for value in (brief or {}).get("must_include") or []))
+    trimmed = list(scheduled_items)
+    while len(trimmed) > 1:
+        last = trimmed[-1]
+        if last.get("itemKind") == "gap":
+            trimmed.pop()
+            continue
+        start_minutes = _parse_clock_minutes(last.get("start_time"))
+        if start_minutes is None or start_minutes < 20 * 60 + 30:
+            break
+        if _is_marked_must_include(last) or _item_requested_by_brief(last, required_text):
+            break
+        trimmed.pop()
+    return trimmed
 
 
 def _annotate_route_leg(leg: dict[str, Any], language: str) -> None:
@@ -707,10 +2346,10 @@ def _role_key(item: dict[str, Any]) -> str:
 
     if item.get("nearbyMealNeeded") or category == "meal_placeholder":
         return "meal_placeholder"
-    if _is_meal_item(item):
-        return "restaurant"
     if any(token in haystack for token in ("cafe", "coffee", "bakery", "카페")):
         return "cafe"
+    if _is_meal_item(item):
+        return "restaurant"
     if any(token in haystack for token in ("restaurant", "food", "meal", "dining", "bistro", "brasserie", "맛집", "식당")):
         return "restaurant"
     if any(token in haystack for token in ("museum", "gallery", "art_museum", "미술관", "박물관")):
@@ -730,9 +2369,96 @@ def _role_key(item: dict[str, Any]) -> str:
     return "landmark"
 
 
+def _is_walk_like_item(item: dict[str, Any], role: str | None = None) -> bool:
+    role = role or _role_key(item)
+    if role in {"park", "garden", "neighborhood"}:
+        return True
+    place = item.get("place") or {}
+    text = _compact_source_text(
+        " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("description") or ""),
+                str(place.get("name") or ""),
+                str(place.get("category") or ""),
+                " ".join(str(tag) for tag in place.get("tags") or []),
+            ]
+        )
+    )
+    return any(
+        token in text
+        for token in (
+            "walk",
+            "walking",
+            "stroll",
+            "promenade",
+            "seine",
+            "river",
+            "\uc0b0\ucc45",
+            "\uac77\uae30",
+            "\uac78\uc5b4",
+            "\uc138\ub098",
+            "\uc13c\uac15",
+        )
+    )
+
+
 def _is_lunch_item(item: dict[str, Any]) -> bool:
-    text = f"{item.get('time_slot') or ''} {item.get('title') or ''} {item.get('description') or ''}".lower()
-    return "lunch" in text or "점심" in text
+    place = item.get("place") or {}
+    category = str(place.get("category") or "").lower()
+    title_text = f"{item.get('title') or ''} {item.get('description') or ''}".lower()
+    if "lunch" in title_text or "점심" in title_text:
+        return True
+    return str(item.get("time_slot") or "") == "lunch" and category in MEAL_PLACE_CATEGORIES
+
+
+def _is_brunch_item(item: dict[str, Any]) -> bool:
+    place = item.get("place") or {}
+    cuisine = place.get("cuisine") or []
+    if not isinstance(cuisine, list):
+        cuisine = [cuisine]
+    slot_tags = item.get("slotTags") or item.get("slot_tags") or []
+    if not isinstance(slot_tags, list):
+        slot_tags = [slot_tags]
+    text = " ".join(
+        [
+            str(item.get("time_slot") or ""),
+            str(item.get("title") or ""),
+            str(item.get("description") or ""),
+            " ".join(str(value) for value in cuisine if value),
+            " ".join(str(value) for value in slot_tags if value),
+        ]
+    ).lower()
+    return any(token in text for token in ("brunch", "breakfast", "bakery", "coffee"))
+
+
+def _is_time_anchor_item(item: dict[str, Any], role: str) -> bool:
+    if _is_locked_final_anchor(item):
+        return True
+    if role in {"night_view", "meal_placeholder", "restaurant"}:
+        return True
+    place = item.get("place") or {}
+    category = str(place.get("category") or "").lower()
+    slot_tags = item.get("slotTags") or item.get("slot_tags") or []
+    if not isinstance(slot_tags, list):
+        slot_tags = [slot_tags]
+    tag_text = " ".join(str(value).lower() for value in slot_tags if value)
+    return category in {"bar", "wine_bar"} or any(token in tag_text for token in ("jazz", "nightlife", "music"))
+
+
+def _is_night_view_lock(item: dict[str, Any]) -> bool:
+    if _is_locked_final_anchor(item):
+        return True
+    lock_text = _compact_source_text(
+        " ".join(
+            [
+                str(item.get("slotLockReason") or ""),
+                str(item.get("slotLockLabel") or ""),
+                str(item.get("locked_label") or ""),
+            ]
+        )
+    )
+    return any(token in lock_text for token in ("night", "nightview", "sunset", "야경", "밤", "석양", "선셋"))
 
 
 def _is_dinner_item(item: dict[str, Any]) -> bool:
@@ -740,9 +2466,27 @@ def _is_dinner_item(item: dict[str, Any]) -> bool:
     return "dinner" in text or "저녁" in text
 
 
+def _is_late_bar_item(item: dict[str, Any]) -> bool:
+    place = item.get("place") or {}
+    category = str(place.get("category") or "").lower()
+    tags = " ".join(str(value).lower() for value in place.get("tags") or [])
+    cuisine = place.get("cuisine") or []
+    if not isinstance(cuisine, list):
+        cuisine = [cuisine]
+    cuisine_text = " ".join(str(value).lower() for value in cuisine)
+    text = " ".join([str(item.get("title") or "").lower(), tags, cuisine_text])
+    return category in {"bar", "wine_bar"} or any(token in text for token in ("jazz", "nightlife", "wine", "재즈"))
+
+
 def _preferred_start_minutes(item: dict[str, Any], role: str) -> int | None:
     preferred = _parse_clock_minutes(item.get("start_time"))
+    if item.get("slotLockReason"):
+        slot = str(item.get("time_slot") or "")
+        if slot in _STRUCTURED_SLOT_MINUTES:
+            return max(preferred or _STRUCTURED_SLOT_MINUTES[slot], _STRUCTURED_SLOT_MINUTES[slot])
     if role == "restaurant" and _is_lunch_item(item):
+        if _is_brunch_item(item):
+            return preferred or (11 * 60 + 15)
         return max(preferred or LUNCH_START_MINUTES, LUNCH_START_MINUTES)
     if role == "restaurant":
         return max(preferred or DINNER_START_MINUTES, DINNER_START_MINUTES)
@@ -762,13 +2506,21 @@ def _parse_clock_minutes(value: Any) -> int | None:
         return None
 
 
-def _initial_day_start_minutes(items: list[dict[str, Any]], pace_level: str) -> int:
+def _initial_day_start_minutes(
+    items: list[dict[str, Any]],
+    pace_level: str,
+    preference_profile: dict[str, Any] | None = None,
+) -> int:
     if not items:
         return DAY_START_MINUTES
 
     first_item = items[0]
     first_pref = _preferred_start_minutes(first_item, _role_key(first_item))
     lower_bound = max(DAY_START_MINUTES, first_pref or DAY_START_MINUTES)
+    if _late_start_requested(preference_profile):
+        lower_bound = max(lower_bound, 10 * 60 + 30)
+    if first_pref is not None and str(first_item.get("time_slot") or "") == "morning" and first_item.get("slotLockReason"):
+        return lower_bound
 
     required_before = 0
     latest_viable_starts: list[int] = []
@@ -778,7 +2530,12 @@ def _initial_day_start_minutes(items: list[dict[str, Any]], pace_level: str) -> 
             preferred_start = _preferred_start_minutes(item, role)
             if preferred_start is not None:
                 latest_viable_starts.append(preferred_start - required_before)
-        required_before += _stay_duration_minutes(item, role, pace_level)
+        required_before += _stay_duration_minutes(
+            item,
+            role,
+            pace_level,
+            low_walking=bool((preference_profile or {}).get("low_walking")),
+        )
         required_before += _transfer_minutes_from_leg(item.get("route_to_next"))
 
     if not latest_viable_starts:
@@ -788,6 +2545,29 @@ def _initial_day_start_minutes(items: list[dict[str, Any]], pace_level: str) -> 
     if latest_feasible >= lower_bound:
         return latest_feasible
     return lower_bound
+
+
+def _late_start_requested(preference_profile: dict[str, Any] | None) -> bool:
+    if not isinstance(preference_profile, dict):
+        return False
+    brief = preference_profile.get("planning_brief") if isinstance(preference_profile.get("planning_brief"), dict) else {}
+    compact = re.sub(r"\s+", "", str(brief.get("source_text") or "").lower())
+    return any(
+        token in compact
+        for token in (
+            "\uc544\uce68\uc77c\ucc0d\ub9d0\uace0",
+            "\uc77c\ucc0d\uc2dc\uc791\ub9d0\uace0",
+            "\uc77c\ucc0d\uc2dc\uc791\ud558\uc9c0\ub9d0\uace0",
+            "\uc544\uce68\ub2a6\uac8c",
+            "\ub2a6\uac8c\uc2dc\uc791",
+            "\ube0c\ub7f0\uce58\ub85c\uc2dc\uc791",
+            "\ube0c\ub7f0\uce58\ud6c4",
+            "\ube0c\ub7f0\uce58\uba39\uace0",
+            "startlate",
+            "latestart",
+            "brunchstart",
+        )
+    )
 
 
 def _transfer_minutes_from_leg(route_to_next: Any) -> int:
@@ -801,7 +2581,7 @@ def _transfer_minutes_from_leg(route_to_next: Any) -> int:
     )
 
 
-def _stay_duration_minutes(item: dict[str, Any], role: str, pace_level: str) -> int:
+def _stay_duration_minutes(item: dict[str, Any], role: str, pace_level: str, *, low_walking: bool = False) -> int:
     if _is_lunch_item(item):
         base = 75
     elif role in {"restaurant", "meal_placeholder"}:
@@ -810,6 +2590,8 @@ def _stay_duration_minutes(item: dict[str, Any], role: str, pace_level: str) -> 
         base = STAY_DURATION_MINUTES.get(role, 65)
     multiplier = PACE_DURATION_MULTIPLIER.get(pace_level, 1.0)
     adjusted = round(base * multiplier / 5) * 5
+    if low_walking and _is_walk_like_item(item, role):
+        return max(25, min(adjusted, 55))
     if role in {"cafe", "park", "night_view"}:
         return max(35, min(adjusted, 110))
     if role == "museum":
@@ -872,6 +2654,10 @@ def _gap_item(
 
 def _gap_title(anchor_item: dict[str, Any], duration: int, preference_profile: dict[str, Any], language: str) -> str:
     role = _role_key(anchor_item)
+    if preference_profile.get("low_walking"):
+        if duration >= 90:
+            return _copy(language, "Seated reset time", "\uc549\uc544\uc11c \uc26c\ub294 \uc5ec\uc720 \uc2dc\uac04")
+        return _copy(language, "Short rest buffer", "\uc9e7\uc740 \ud734\uc2dd \ubc84\ud37c")
     if role == "night_view":
         return _copy(
             language,
@@ -900,6 +2686,12 @@ def _gap_title(anchor_item: dict[str, Any], duration: int, preference_profile: d
 def _gap_reason(anchor_item: dict[str, Any], duration: int, preference_profile: dict[str, Any], language: str) -> str:
     role = _role_key(anchor_item)
     place_name = str((anchor_item.get("place") or {}).get("name") or anchor_item.get("title") or "").strip()
+    if preference_profile.get("low_walking"):
+        return _copy(
+            language,
+            "The user asked for low walking, so this is treated as seated recovery or a nearby cafe break instead of a long stroll.",
+            "\ub9ce\uc774 \uac77\uae30 \uc2eb\ub2e4\ub294 \uc694\uccad\uc744 \ubc18\uc601\ud574, \uae34 \uc0b0\ucc45\uc774 \uc544\ub2c8\ub77c \uc549\uc544\uc11c \uc26c\uac70\ub098 \uac00\uae4c\uc6b4 \uce74\ud398\uc5d0\uc11c \ud68c\ubcf5\ud558\ub294 \uc2dc\uac04\uc73c\ub85c \ub450\uc5c8\uc2b5\ub2c8\ub2e4.",
+        )
     if role == "night_view":
         return _copy(
             language,
@@ -1173,7 +2965,7 @@ def _day_theme_title(
 
 
 def _format_clock(minutes: int) -> str:
-    minutes = max(0, minutes)
+    minutes = min(max(0, minutes), 23 * 60 + 59)
     hours, minute_remainder = divmod(minutes, 60)
     return f"{hours:02d}:{minute_remainder:02d}"
 
@@ -1206,9 +2998,15 @@ def _coordinates(item: dict[str, Any]) -> dict[str, float]:
 
 
 def _is_meal_item(item: dict[str, Any]) -> bool:
+    place = item.get("place") or {}
+    category = str(place.get("category") or "").lower()
+    if category in MEAL_PLACE_CATEGORIES or category == "meal_placeholder":
+        return True
     title = f"{item.get('title') or ''} {item.get('description') or ''}".lower()
     slot = item.get("time_slot")
-    return slot == "lunch" or any(keyword in title for keyword in ["lunch", "dinner", "restaurant", "점심", "저녁", "식사"])
+    if any(keyword in title for keyword in ["lunch", "dinner", "restaurant", "점심", "저녁", "식사"]):
+        return True
+    return slot == "lunch" and category in MEAL_PLACE_CATEGORIES
 
 
 def _day_route_summary(items: list[dict[str, Any]], route_mode: RouteMode, language: str) -> str:

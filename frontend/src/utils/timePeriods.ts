@@ -49,7 +49,8 @@ export function parseClockToMinutes(clock?: string | null) {
 
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  if (hours < 0 || minutes < 0 || minutes > 59) return null;
+  if (hours > 23) return 23 * 60 + 59;
 
   return hours * 60 + minutes;
 }

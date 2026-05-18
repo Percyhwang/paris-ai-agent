@@ -1,7 +1,18 @@
 import { apiRequest } from "./apiClient";
-import type { ItineraryDay, Trip, TripGenerateRequest } from "../types";
+import type { ItineraryDay, Trip, TripGenerateRequest, TripGenerationJob } from "../types";
 
 export const tripService = {
+  startTripGeneration(payload: TripGenerateRequest): Promise<TripGenerationJob> {
+    return apiRequest<TripGenerationJob>("/trips/generate/jobs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getTripGenerationJob(jobId: string): Promise<TripGenerationJob> {
+    return apiRequest<TripGenerationJob>(`/trips/generate/jobs/${jobId}`);
+  },
+
   generateTrip(payload: TripGenerateRequest): Promise<Trip> {
     return apiRequest<Trip>("/trips/generate", {
       method: "POST",
