@@ -61,6 +61,19 @@ CREATE_CASES = [
         "expected": {"party": {"adult": 2, "trip_style": "couple"}},
     },
     {
+        "name": "romantic_night_view_prompt",
+        "message": "여자친구랑 파리 3박4일 가는데 로맨틱하게 짜줘. 브런치 하나 넣고 저녁 야경이 예쁘면 좋겠어. 너무 빡세지 않게.",
+        "expected": {
+            "party": {"adult": 2, "trip_style": "couple"},
+            "pace": {"level": "slow"},
+            "preferences": {
+                "themes": ["romance", "night_view"],
+                "meal_preference": ["brunch"],
+                "night_view_required": True,
+            },
+        },
+    },
+    {
         "name": "friends_digit_count",
         "message": "친구 3명이서 파리 4일 일정 빡세게 짜줘",
         "expected": {"party": {"adult": 3, "trip_style": "friends"}, "pace": {"level": "fast"}},
@@ -136,9 +149,23 @@ CREATE_CASES = [
         "expected": {"preferences": {"weights": {"shopping": 0.8}}},
     },
     {
+        "name": "shopping_plain_interest",
+        "message": "쇼핑이랑 랜드마크 둘 다 챙기고 싶어",
+        "expected": {"preferences": {"themes": ["shopping", "landmark"], "weights": {"shopping": 0.8}}},
+    },
+    {
         "name": "night_view_weight",
         "message": "야경 위주로 3박4일 일정 짜줘",
         "expected": {"preferences": {"weights": {"night_view": 0.8}}},
+    },
+    {
+        "name": "avoid_nightlife_does_not_force_night_slot",
+        "message": "부모님이랑 가는 파리 여행이라 많이 걷지 않는 일정으로 짜줘. 야간 유흥은 빼고 쉬엄쉬엄 보고 싶어.",
+        "expected": {
+            "party": {"trip_style": "family"},
+            "pace": {"level": "slow"},
+            "preferences": {"preferred_time_slots": []},
+        },
     },
     {
         "name": "museum_limit",
@@ -298,6 +325,11 @@ CREATE_CASES = [
     {
         "name": "museum_theme",
         "message": "미술관 위주로 4일 여행 짜줘",
+        "expected": {"preferences": {"themes": ["museum"], "weights": {"museum": 0.85}}},
+    },
+    {
+        "name": "museum_plain_interest",
+        "message": "박물관 좋아해서 파리 3일 일정 짜줘",
         "expected": {"preferences": {"themes": ["museum"], "weights": {"museum": 0.85}}},
     },
     {
@@ -954,6 +986,21 @@ class ParserRegressionTests(unittest.TestCase):
             return
 
         self.assertEqual(expected, actual)
+
+    def test_create_jazz_mood_does_not_auto_set_local_theme(self):
+        message = "파리 3일 여행인데 비 오는 날에도 괜찮게 실내 위주로 짜고 저녁에는 재즈바 같은 분위기도 있었으면 해."
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            with redirect_stdout(io.StringIO()):
+                payload = parse_create_plan(message).model_dump()
+
+        themes = ((payload.get("preferences") or {}).get("themes") or [])
+        travel_style = ((payload.get("preferences") or {}).get("travel_style") or [])
+
+        self.assertIn("nightlife", themes)
+        self.assertNotIn("local", themes)
+        self.assertIn("nightlife", travel_style)
+        self.assertNotIn("local", travel_style)
 
 
 def _create_test(case):

@@ -7,14 +7,14 @@ from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.services.directions_service import RouteMode, get_route_leg
-from app.services.place_repository_service import (
+from app.repositories.place_repository import (
     PARIS_CENTER,
     distance_meters,
     find_nearby_meal_place,
     midpoint,
     resolve_place,
 )
+from app.tools.directions_tool import RouteMode, get_route_leg
 
 DAY_START_MINUTES = 9 * 60 + 30
 LUNCH_START_MINUTES = 12 * 60
@@ -700,11 +700,23 @@ async def _resolve_item_place(db: AsyncIOMotorDatabase, item: dict[str, Any]) ->
     )
     coordinates = resolved_place.get("coordinates") or place.get("coordinates")
     if not coordinates:
-        return None
+        unresolved_item = dict(item)
+        unresolved_place = {**resolved_place}
+        for key, value in place.items():
+            if value not in (None, "", [], {}):
+                unresolved_place[key] = value
+        unresolved_place["coordinates"] = None
+        unresolved_item["place"] = unresolved_place
+        unresolved_item["title"] = resolved_place.get("name") or unresolved_item.get("title") or name
+        unresolved_item["resolutionStatus"] = "unresolved"
+        unresolved_item["resolutionReason"] = "missing_coordinates"
+        return unresolved_item
 
     resolved_item = dict(item)
     resolved_item["place"] = _merge_place_metadata(place, resolved_place, coordinates=coordinates)
     resolved_item["title"] = resolved_place.get("name") or resolved_item.get("title") or name
+    resolved_item.pop("resolutionStatus", None)
+    resolved_item.pop("resolutionReason", None)
     return resolved_item
 
 
@@ -835,10 +847,10 @@ async def _resolve_brief_target_place(
             catalog_place = resolve_catalog_place(query)
         except Exception:
             catalog_place = None
-        if isinstance(catalog_place, dict):
+        if isinstance(catalog_place, dict) and catalog_place.get("coordinates"):
             return catalog_place
         try:
-            place = await resolve_place(db, query, fallback_coordinates=PARIS_CENTER)
+            place = await resolve_place(db, query)
         except Exception:
             place = None
         if isinstance(place, dict) and place.get("coordinates"):
@@ -892,6 +904,8 @@ def _default_slot_for_constraint(constraint: dict[str, Any]) -> str:
 
 
 def _nearest_neighbor_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if any(_coordinates_or_none(item) is None for item in items):
+        return [dict(item) for item in items]
     remaining = [dict(item) for item in items]
     current = min(remaining, key=lambda item: distance_meters(PARIS_CENTER, _coordinates(item)))
     ordered = [current]
@@ -1226,7 +1240,7 @@ def _prefers_cafe_break(preference_profile: dict[str, Any]) -> bool:
     brief = preference_profile.get("planning_brief") if isinstance(preference_profile, dict) else {}
     meal_preferences = {str(value).lower() for value in (brief or {}).get("meal_preference") or []}
     style_tags = {str(value).lower() for value in preference_profile.get("style_tags") or []} if isinstance(preference_profile, dict) else set()
-    return bool(meal_preferences.intersection({"cafe", "coffee", "dessert", "bakery", "brunch"})) or bool(style_tags.intersection({"cafe", "foodie", "dessert"}))
+    return bool(meal_preferences.intersection({"cafe", "coffee", "dessert", "bakery"})) or bool(style_tags.intersection({"cafe", "dessert"}))
 
 
 def _prefers_general_meal(preference_profile: dict[str, Any]) -> bool:
@@ -2023,8 +2037,10 @@ async def _attach_route_legs(
         item.pop("route_to_next", None)
         if index >= len(items) - 1:
             continue
-        origin = _coordinates(item)
-        destination = _coordinates(items[index + 1])
+        origin = _coordinates_or_none(item)
+        destination = _coordinates_or_none(items[index + 1])
+        if origin is None or destination is None:
+            continue
         item["route_to_next"] = await get_route_leg(origin, destination, route_mode, language)
         _annotate_route_leg(item["route_to_next"], language)
 
@@ -2088,6 +2104,14 @@ def _schedule_day(
         item["timeReason"] = str(item.get("timeReason") or _time_reason(item, role, index, len(items), preference_profile, language))
         item["expectedExperience"] = str(item.get("expectedExperience") or _expected_experience(item, role, language))
         item["editableReason"] = str(item.get("editableReason") or _editable_reason(item, role, language))
+        previous_real_item = next(
+            (scheduled for scheduled in reversed(scheduled_items) if scheduled.get("itemKind") != "gap"),
+            None,
+        )
+        if previous_real_item is not None:
+            item["previousMoveNote"] = str(item.get("previousMoveNote") or _previous_move_note(previous_real_item, item, language))
+        else:
+            item["previousMoveNote"] = str(item.get("previousMoveNote") or "")
         item["nearbyMealNeeded"] = bool(item.get("nearbyMealNeeded"))
         if role == "meal_placeholder":
             item["slotPurpose"] = _copy(
@@ -2997,6 +3021,20 @@ def _coordinates(item: dict[str, Any]) -> dict[str, float]:
     return {"lat": float(coordinates["lat"]), "lng": float(coordinates["lng"])}
 
 
+def _coordinates_or_none(item: dict[str, Any]) -> dict[str, float] | None:
+    coordinates = (item.get("place") or {}).get("coordinates")
+    if not isinstance(coordinates, dict):
+        return None
+    lat = coordinates.get("lat")
+    lng = coordinates.get("lng")
+    try:
+        if lat is None or lng is None:
+            return None
+        return {"lat": float(lat), "lng": float(lng)}
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_meal_item(item: dict[str, Any]) -> bool:
     place = item.get("place") or {}
     category = str(place.get("category") or "").lower()
@@ -3040,6 +3078,27 @@ def _day_route_summary(items: list[dict[str, Any]], route_mode: RouteMode, langu
         language,
         f"The day links {lead} {mode_label}, and the route keeps {effort_copy}.",
         f"{lead} 중심으로 {mode_label} 연결했고, 전체적으로 {effort_copy}로 정리했습니다.",
+    )
+
+
+def _previous_move_note(previous_item: dict[str, Any], current_item: dict[str, Any], language: str) -> str:
+    route_to_next = previous_item.get("route_to_next")
+    previous_name = str(previous_item.get("title") or (previous_item.get("place") or {}).get("name") or "").strip()
+    current_name = str(current_item.get("title") or (current_item.get("place") or {}).get("name") or "").strip()
+    if not previous_name or not current_name:
+        return ""
+    if isinstance(route_to_next, dict):
+        compact = str(route_to_next.get("compact_summary") or route_to_next.get("summary") or route_to_next.get("comfort_summary") or "").strip()
+        if compact:
+            return _copy(
+                language,
+                f"From {previous_name} to {current_name}: {compact}.",
+                f"{previous_name}에서 {current_name}(으)로 {compact}.",
+            )
+    return _copy(
+        language,
+        f"Moved naturally from {previous_name} to {current_name} within the same route cluster.",
+        f"{previous_name}에서 {current_name}(으)로 같은 권역 흐름 안에서 자연스럽게 이어지도록 잡았습니다.",
     )
 
 

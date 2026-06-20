@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import AsyncMock, patch
 
-from app.services.route_optimizer_service import _is_valid_meal_candidate, _role_key, _schedule_day
+from app.services.route_optimizer_service import _attach_route_legs, _is_valid_meal_candidate, _prefers_cafe_break, _role_key, _schedule_day
 
 
 def _place_item(title: str, category: str, time_slot: str) -> dict:
@@ -18,6 +19,24 @@ def _place_item(title: str, category: str, time_slot: str) -> dict:
 
 
 class RouteOptimizerServiceTests(unittest.TestCase):
+    def test_prefers_cafe_break_requires_explicit_cafe_signal(self) -> None:
+        self.assertFalse(
+            _prefers_cafe_break(
+                {
+                    "planning_brief": {"meal_preference": ["brunch"], "travel_style": ["foodie"]},
+                    "style_tags": ["foodie"],
+                }
+            )
+        )
+        self.assertTrue(
+            _prefers_cafe_break(
+                {
+                    "planning_brief": {"meal_preference": ["cafe"], "travel_style": ["slow"]},
+                    "style_tags": ["cafe"],
+                }
+            )
+        )
+
     def test_iconic_landmarks_are_not_forced_into_night_view_outside_evening(self) -> None:
         self.assertEqual(_role_key(_place_item("Seine River", "landmark", "morning")), "landmark")
         self.assertEqual(_role_key(_place_item("Eiffel Tower", "landmark", "afternoon")), "landmark")
@@ -122,6 +141,46 @@ class RouteOptimizerServiceTests(unittest.TestCase):
 
         self.assertEqual(items[0]["itemKind"], "gap")
         self.assertEqual(items[1]["itemKind"], "stop")
+
+    def test_schedule_day_populates_previous_move_note_from_prior_leg(self) -> None:
+        items = [
+            _place_item("Louvre Museum", "museum", "morning"),
+            _place_item("Seine Walk", "neighborhood", "afternoon"),
+        ]
+        items[0]["route_to_next"] = {
+            "mode": "walk",
+            "summary": "도보 12분 이동",
+            "duration_seconds": 12 * 60,
+            "duration_text": "12분",
+            "compact_summary": "도보 12분",
+        }
+
+        _schedule_day(items, "normal", "ko")
+
+        self.assertTrue(items[1]["previousMoveNote"].startswith("Louvre Museum에서 Seine Walk"))
+
+
+class RouteOptimizerAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_attach_route_legs_skips_segments_with_unresolved_coordinates(self) -> None:
+        items = [
+            {
+                "time_slot": "afternoon",
+                "title": "Hidden Eiffel Viewpoint",
+                "place": {
+                    "name": "Hidden Eiffel Viewpoint",
+                    "category": "landmark",
+                    "coordinates": None,
+                },
+                "description": "Locked stop without resolved coordinates.",
+            },
+            _place_item("Eiffel Tower", "landmark", "evening"),
+        ]
+
+        with patch("app.services.route_optimizer_service.get_route_leg", new=AsyncMock()) as get_route_leg_mock:
+            await _attach_route_legs(items, "walk", "ko")
+
+        get_route_leg_mock.assert_not_awaited()
+        self.assertNotIn("route_to_next", items[0])
 
 
 if __name__ == "__main__":

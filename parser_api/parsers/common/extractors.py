@@ -24,6 +24,7 @@ def extract_museum_limit(text: str) -> Optional[int]:
                 "한개이하",
                 "1개이하",
                 "하나만",
+                "한개만",
                 "한곳만",
                 "대표하나",
                 "atmostone",
@@ -38,9 +39,9 @@ def extract_museum_limit(text: str) -> Optional[int]:
     if match:
         return int(match.group(1))
 
-    match = re.search(r"(?:박물관|미술관)(?:은|는)?하루(하나|한곳|두곳|두개|셋|세개|네개|네곳)만", compact)
+    match = re.search(r"(?:박물관|미술관)(?:은|는)?하루(하나|한개|한곳|두곳|두개|셋|세개|네개|네곳)만", compact)
     if match:
-        return {"하나": 1, "한곳": 1, "두곳": 2, "두개": 2, "셋": 3, "세개": 3, "네개": 4, "네곳": 4}.get(
+        return {"하나": 1, "한개": 1, "한곳": 1, "두곳": 2, "두개": 2, "셋": 3, "세개": 3, "네개": 4, "네곳": 4}.get(
             match.group(1)
         ) or KOREAN_KNUM_MAP.get(match.group(1))
     return None

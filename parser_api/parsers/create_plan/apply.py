@@ -74,12 +74,53 @@ def _merge_unique(values: list[str], extras: list[str]) -> list[str]:
     return list(dict.fromkeys([*values, *extras]))
 
 
+def _has_negative_night_view_signal(compact: str) -> bool:
+    return any(
+        token in compact
+        for token in (
+            "야경은없어도",
+            "야경없어도",
+            "야경은빼",
+            "야경빼",
+            "야경제외",
+            "야경은제외",
+            "야경은싫",
+            "야경싫",
+            "야경필요없",
+        )
+    )
+
+
+def _has_negative_nightlife_signal(compact: str) -> bool:
+    return any(
+        token in compact
+        for token in (
+            "야간유흥은빼",
+            "야간유흥빼",
+            "야간유흥은제외",
+            "야간유흥제외",
+            "밤유흥은빼",
+            "밤유흥빼",
+            "밤유흥은제외",
+            "밤유흥제외",
+            "유흥은빼",
+            "유흥빼",
+            "유흥은제외",
+            "유흥제외",
+            "nightlifeavoid",
+            "avoidnightlife",
+        )
+    )
+
+
 def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict | None = None) -> CreatePlanPayload:
     plan.intent = Intent.CREATE_PLAN.value
     plan.destination.city = "Paris"
     plan.destination.country = "FR"
     compact = message.replace(" ", "")
     context_tags = _context_style_tags(context)
+    night_view_avoided = _has_negative_night_view_signal(compact)
+    nightlife_avoided = _has_negative_nightlife_signal(compact)
 
     days, start_iso, end_iso, source = _extract_days(message)
     context_total_days = (context or {}).get("total_days")
@@ -123,7 +164,7 @@ def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict |
     if "유모차" in compact:
         plan.mobility.stroller = True
 
-    if any(token in message for token in SLOW_PACE_TOKENS):
+    if any(token in message or token in compact for token in SLOW_PACE_TOKENS):
         plan.pace.level = "slow"
     elif "slow" in context_tags:
         plan.pace.level = "slow"
@@ -144,12 +185,16 @@ def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict |
                 plan.preferences.themes.append(theme)
 
     for theme in _extract_themes(message):
+        if theme == "night_view" and night_view_avoided:
+            continue
         if theme not in plan.preferences.themes:
             plan.preferences.themes.append(theme)
     for tag in context_tags:
         mapped_theme = STYLE_TAG_THEME_MAP.get(tag)
         if mapped_theme and mapped_theme not in plan.preferences.themes:
             plan.preferences.themes.append(mapped_theme)
+    if any(token in compact for token in ("야경", "nightview", "night_view")) and not night_view_avoided and "night_view" not in plan.preferences.themes:
+        plan.preferences.themes.append("night_view")
 
     if "cafe" in plan.preferences.themes:
         plan.preferences.weights.cafe = 0.8
@@ -199,8 +244,10 @@ def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict |
         plan.mobility.travel_mode = "both"
 
     preferred_slots = extract_slots_in_order(compact)
+    if nightlife_avoided:
+        preferred_slots = [slot for slot in preferred_slots if slot != "night"]
     meal_preference = _extract_meal_preferences(message)
-    night_view_required = "night_view" in plan.preferences.themes or "night_view" in context_tags
+    night_view_required = ("night_view" in plan.preferences.themes or "night_view" in context_tags) and not night_view_avoided
     if night_view_required:
         plan.preferences.night_view_required = True
         for slot in ("evening", "night"):
@@ -208,12 +255,12 @@ def _apply_rule_overrides(plan: CreatePlanPayload, message: str, context: dict |
                 preferred_slots.append(slot)
     if any(token in compact for token in ("석양", "선셋", "sunset")) and "evening" not in preferred_slots:
         preferred_slots.append("evening")
-    jazz_avoided = any(token in compact for token in ("재즈바는제외", "재즈바제외", "재즈바빼", "재즈는제외", "재즈제외"))
+    jazz_avoided = nightlife_avoided or any(token in compact for token in ("재즈바는제외", "재즈바제외", "재즈바빼", "재즈는제외", "재즈제외"))
     if any(token in compact for token in ("재즈", "재즈바", "jazz")) and not jazz_avoided:
         for slot in ("evening", "night"):
             if slot not in preferred_slots:
                 preferred_slots.append(slot)
-        for theme in ("local", "nightlife"):
+        for theme in ("nightlife",):
             if theme not in plan.preferences.themes:
                 plan.preferences.themes.append(theme)
 

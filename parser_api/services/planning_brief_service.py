@@ -37,6 +37,14 @@ PLACE_CANONICALS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 INCLUDE_CUES = ("꼭", "반드시", "무조건", "포함", "넣", "가고싶", "보고싶", "방문", "핵심", "보고", "산책", "마무리", "시작", "visit", "must", "include")
 AVOID_CUES = ("빼", "제외", "말고", "없는", "없이", "가지않", "안가", "넣지", "피하", "싫", "avoid", "without", "skip", "exclude")
+PLANNER_SELF_CORRECTION_MARKER = "[Planner self-correction context]"
+
+
+def _user_request_text(value: Any) -> str:
+    text = str(value or "")
+    if PLANNER_SELF_CORRECTION_MARKER in text:
+        text = text.split(PLANNER_SELF_CORRECTION_MARKER, 1)[0]
+    return text.strip()
 
 
 def build_unified_planning_brief(
@@ -82,7 +90,7 @@ def _create_trip_brief(payload: dict[str, Any], context: dict[str, Any]) -> dict
     mobility = payload.get("mobility") if isinstance(payload.get("mobility"), dict) else {}
     budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
     lodging = payload.get("lodging") if isinstance(payload.get("lodging"), dict) else {}
-    source_text = str(context.get("message") or payload.get("_source_message") or "").strip()
+    source_text = _user_request_text(context.get("message") or payload.get("_source_message") or "")
 
     must_include = _string_list(preferences.get("must_include"))
     must_avoid = _string_list(preferences.get("must_avoid"))
@@ -148,7 +156,7 @@ def _create_trip_brief(payload: dict[str, Any], context: dict[str, Any]) -> dict
 
 def _modify_trip_brief(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     operations = [item for item in payload.get("operations") or [] if isinstance(item, dict)]
-    source_text = str(context.get("message") or "").strip()
+    source_text = _user_request_text(context.get("message") or "")
     must_include = _merge_unique(
         [
             str((operation.get("constraints_patch") or {}).get("to_place") or operation.get("place_name") or "").strip()
@@ -443,6 +451,7 @@ def _slot_window(preferred_time_slots: list[str]) -> tuple[str | None, str | Non
     normalized = [slot for slot in preferred_time_slots if slot in {"morning", "lunch", "afternoon", "evening", "night"}]
     if not normalized:
         return None, None
+    slot_order = {"morning": 0, "lunch": 1, "afternoon": 2, "evening": 3, "night": 4}
     start_map = {
         "morning": "09:00",
         "lunch": "12:00",
@@ -457,8 +466,9 @@ def _slot_window(preferred_time_slots: list[str]) -> tuple[str | None, str | Non
         "evening": "21:00",
         "night": "23:00",
     }
-    start_time = start_map.get(normalized[0])
-    end_time = end_map.get(normalized[-1])
+    ordered_slots = sorted(normalized, key=lambda slot: slot_order.get(slot, 99))
+    start_time = start_map.get(ordered_slots[0])
+    end_time = end_map.get(ordered_slots[-1])
     return start_time, end_time
 
 
@@ -531,8 +541,8 @@ def _apply_text_fallbacks(
         next_preferred_slots = _merge_unique(next_preferred_slots, ["evening"])
     if any(token in lowered for token in ("brunch", "브런치", "늦은 아침", "늦은아침")):
         next_meal_preference = _merge_unique(next_meal_preference, ["brunch"])
-        next_travel_style = _merge_unique(next_travel_style, ["cafe", "foodie"])
-        next_preferred_slots = _merge_unique(next_preferred_slots, ["morning", "lunch"])
+        next_travel_style = _merge_unique(next_travel_style, ["foodie"])
+        next_preferred_slots = _merge_unique(next_preferred_slots, ["lunch"])
     if any(token in lowered for token in ("dinner", "디너", "저녁 식사", "저녁은", "프렌치 디너")):
         next_preferred_slots = _merge_unique(next_preferred_slots, ["evening"])
     if any(token in lowered for token in ("cafe", "coffee", "카페")):
@@ -547,7 +557,7 @@ def _apply_text_fallbacks(
     jazz_avoided = any(_avoid_cue_after_alias(source_text, token, window=10) for token in ("jazz", "재즈", "재즈바", "jazz bar"))
     if any(token in lowered for token in ("jazz", "재즈", "재즈바", "jazz bar")) and not jazz_avoided:
         next_meal_preference = _merge_unique(next_meal_preference, ["jazz_bar"])
-        next_travel_style = _merge_unique(next_travel_style, ["jazz", "nightlife", "local"])
+        next_travel_style = _merge_unique(next_travel_style, ["jazz", "nightlife"])
         next_preferred_slots = _merge_unique(next_preferred_slots, ["evening", "night"])
     elif jazz_avoided:
         next_meal_preference = [value for value in next_meal_preference if str(value).lower() not in {"jazz", "jazz_bar", "bar", "wine"}]
@@ -856,6 +866,9 @@ def _has_slow_signal(source_text: str) -> bool:
             "너무많이걷지",
             "이동을줄",
             "부담스럽지",
+            "빡세지않게",
+            "너무빡세지않게",
+            "무리하지않게",
             "장소는적게",
             "4곳이하",
             "세곳정도",
@@ -866,7 +879,7 @@ def _has_slow_signal(source_text: str) -> bool:
 def _has_fast_signal(source_text: str) -> bool:
     lowered = source_text.lower()
     compact = source_text.replace(" ", "")
-    return any(token in lowered or token in compact for token in ("fast", "packed", "dense", "busy", "빡빡", "타이트", "꽉채워", "알차게"))
+    return any(token in lowered or token in compact for token in ("fast", "packed", "dense", "busy", "빡빡", "타이트", "꽉채워", "꽉차게", "알차게"))
 
 
 def _has_late_start_signal(source_text: str) -> bool:

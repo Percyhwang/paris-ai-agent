@@ -36,6 +36,7 @@ PLACE_ALIAS_GROUPS = (
     {"노트르담", "notredame", "notredamecathedral"},
     {"생트샤펠", "생트샤펠성당", "saintechapelle", "saintechapel", "saintchapelle"},
     {"마레", "마레지구", "lemarais", "marais"},
+    {"생제르맹", "생제르맹데프레", "saintgermain", "saintgermaindespres", "saint-germain", "saint-germain-des-pres"},
     {"튈르리", "튈르리가든", "tuileries", "tuileriesgarden"},
     {"뤽상부르", "뤽상부르공원", "룩셈부르크", "룩셈부르크공원", "luxembourg", "luxembourggardens"},
     {"팔레가르니에", "가르니에", "palaisgarnier", "opera"},
@@ -55,11 +56,14 @@ PLACE_CANONICALS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("노트르담 대성당", ("노트르담 대성당", "노트르담", "notre dame")),
     ("생트샤펠", ("생트샤펠", "생트 샤펠", "sainte chapelle", "sainte-chapelle", "saint chapelle")),
     ("튈르리 정원", ("튈르리 정원", "튈르리", "tuileries")),
+    ("생제르맹 데 프레", ("생제르맹 데 프레", "생제르맹데프레", "생제르맹", "saint germain", "saint-germain", "saint germain des pres", "saint-germain-des-pres", "saintgermaindespres")),
     ("뤽상부르 공원", ("뤽상부르 공원", "뤽상부르", "룩셈부르크 공원", "룩셈부르크", "luxembourg gardens", "luxembourg")),
     ("오페라 가르니에", ("오페라 가르니에", "오페라", "가르니에", "팔레 가르니에", "palais garnier", "palais-garnier", "opera garnier", "opera")),
     ("팔레 루아얄", ("팔레 루아얄", "팔레루아얄", "palais royal", "palais-royal", "palaisroyal")),
     ("르 카보 드 라 위셰트", ("르 카보 드 라 위셰트", "재즈바", "재즈 바", "jazz bar", "jazz", "caveau de la huchette", "huchette")),
 )
+
+PLANNER_SELF_CORRECTION_MARKER = "[Planner self-correction context]"
 
 INCLUDE_CUES = (
     "꼭",
@@ -109,6 +113,13 @@ AVOID_CUES = (
 )
 
 
+def extract_user_request_text(value: Any) -> str:
+    text = str(value or "")
+    if PLANNER_SELF_CORRECTION_MARKER in text:
+        text = text.split(PLANNER_SELF_CORRECTION_MARKER, 1)[0]
+    return text.strip()
+
+
 def build_planning_brief(
     *,
     plan: dict[str, Any] | None = None,
@@ -133,9 +144,9 @@ def build_planning_brief(
     source_text = " ".join(
         text
         for text in [
-            str(plan.get("_source_message") or "").strip(),
-            str(getattr(request, "prompt", "") or "").strip(),
-            str(trip.get("prompt") or "").strip(),
+            extract_user_request_text(plan.get("_source_message")),
+            extract_user_request_text(getattr(request, "prompt", "")),
+            extract_user_request_text(trip.get("prompt")),
         ]
         if text
     )
@@ -461,7 +472,7 @@ def validate_planning_brief_compliance(
         if helper_gap_minutes >= 90 and not has_time_locked_anchor:
             quality_violations.append(f"day_{day.get('day_number')}_helper_block_ratio")
         real_meal_items = [item for item in day_items if _is_meal_item(item)]
-        if any(
+        day_has_brunch = any(
             (
                 str(item.get("time_slot") or "") in {"morning", "lunch"}
                 or (_item_start_minutes(item) is not None and int(_item_start_minutes(item) or 0) < 13 * 60)
@@ -480,9 +491,10 @@ def validate_planning_brief_compliance(
                 for token in ("brunch", "breakfast", "cafe", "bakery", "브런치", "카페")
             )
             for item in day_items
-        ):
+        )
+        if day_has_brunch:
             has_brunch = True
-        if any(
+        day_has_cafe_dessert_anchor = any(
             str(((item.get("place") or {}).get("category")) or "").lower() in {"cafe", "bakery"}
             or any(
                 token in _normalize_name(
@@ -497,9 +509,10 @@ def validate_planning_brief_compliance(
                 for token in ("cafe", "coffee", "dessert", "cake", "bakery", "patisserie", "croissant")
             )
             for item in day_items
-        ):
+        )
+        if day_has_cafe_dessert_anchor:
             has_cafe_dessert_anchor = True
-        if any(
+        day_has_french_dinner = any(
             str(item.get("time_slot") or "") == "evening"
             and (
                 str(((item.get("place") or {}).get("category")) or "").lower() in {"restaurant", "bistro", "brasserie", "bar"}
@@ -517,9 +530,10 @@ def validate_planning_brief_compliance(
                 )
             )
             for item in real_meal_items
-        ):
+        )
+        if day_has_french_dinner:
             has_french_dinner = True
-        if any(
+        day_has_jazz_bar = any(
             str(item.get("time_slot") or "") in {"evening", "night"}
             and (
                 str(((item.get("place") or {}).get("category")) or "").lower() == "bar"
@@ -537,9 +551,10 @@ def validate_planning_brief_compliance(
                 )
             )
             for item in day_items
-        ):
+        )
+        if day_has_jazz_bar:
             has_jazz_bar = True
-        if day_items and (
+        day_has_night_climax = day_items and (
             bool(day_items[-1].get("isNightViewSpot"))
             or _is_named_night_climax(day_items[-1])
             or (
@@ -561,11 +576,30 @@ def validate_planning_brief_compliance(
                     )
                 )
             )
-        ):
+        )
+        if day_has_night_climax:
             has_night_climax = True
         if pace == "slow":
             max_places = 5
-            if has_night_climax and (has_cafe_dessert_anchor or has_french_dinner):
+            main_activity_count = sum(
+                1
+                for item in day_items
+                if str(item.get("role") or ((item.get("place") or {}).get("role") or "")).lower() in {"main_activity", "museum_or_gallery", "landmark", "shopping"}
+                or str(((item.get("place") or {}).get("category")) or "").lower() in {"museum", "gallery", "landmark", "cathedral", "shopping"}
+            )
+            romantic_landmark_day = any(token in travel_style for token in {"romance", "romantic", "couple"}) and any(
+                token in travel_style for token in {"landmark", "classic"}
+            )
+            day_has_walk_reset = any(
+                str(item.get("role") or ((item.get("place") or {}).get("role") or "")).lower() == "walking_route"
+                or str(((item.get("place") or {}).get("category")) or "").lower() in {"park", "neighborhood"}
+                for item in day_items
+            )
+            if romantic_landmark_day and day_has_night_climax and real_meal_items and main_activity_count >= 2:
+                max_places = 6
+            elif day_has_night_climax and (day_has_cafe_dessert_anchor or day_has_french_dinner):
+                max_places = 6
+            elif real_meal_items and main_activity_count <= 2 and (day_has_cafe_dessert_anchor or day_has_walk_reset):
                 max_places = 6
             if len(day_items) > max_places:
                 pace_violations.append(f"day_{day.get('day_number')}_too_many_places")
@@ -787,6 +821,7 @@ def _apply_text_fallbacks(
     travel_style: list[str],
 ) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     lowered = source_text.lower()
+    compact_source = source_text.replace(" ", "")
     next_must_include = list(must_include)
     next_must_avoid = list(must_avoid)
     next_preferred_time_slots = list(preferred_time_slots)
@@ -807,9 +842,14 @@ def _apply_text_fallbacks(
     if _has_cathedral_course_signal(source_text):
         text_include = _merge_unique(text_include, ["\ub178\ud2b8\ub974\ub2f4 \ub300\uc131\ub2f9", "\uc0dd\ud2b8\uc0e4\ud3a0"])
         next_travel_style = _merge_unique(next_travel_style, ["architecture", "walk"])
+    if _has_cathedral_avoid_signal(source_text):
+        text_avoid = _merge_unique(text_avoid, ["노트르담 대성당", "생트샤펠"])
+    if _has_negative_jazz_or_nightlife_signal(source_text):
+        text_avoid = _merge_unique(text_avoid, ["르 카보 드 라 위셰트"])
     if _has_famous_landmark_signal(source_text):
-        text_include = _merge_unique(text_include, ["\ub8e8\ube0c\ub974 \ubc15\ubb3c\uad00", "\uc13c\uac15 \uc0b0\ucc45", "\uc5d0\ud3a0\ud0d1", "\uac1c\uc120\ubb38"])
         next_travel_style = _merge_unique(next_travel_style, ["landmark", "classic"])
+    if _has_landmark_minimize_signal(source_text):
+        next_travel_style = _merge_unique(next_travel_style, ["local"])
     if _has_generic_river_walk_signal(source_text):
         text_include = _merge_unique(text_include, ["센강 산책"])
     if _has_positive_river_signal(source_text):
@@ -834,6 +874,8 @@ def _apply_text_fallbacks(
         next_must_include = _merge_unique(next_must_include, ["에펠탑"])
     if _has_budget_save_signal(source_text):
         next_travel_style = _merge_unique(next_travel_style, ["budget", "walk"])
+    if _has_early_start_signal(source_text):
+        next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["morning"])
     if _has_late_start_signal(source_text):
         next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["afternoon"])
     elif "오후" in source_text:
@@ -841,12 +883,19 @@ def _apply_text_fallbacks(
     if _has_night_view_signal(source_text):
         next_travel_style = _merge_unique(next_travel_style, ["night_view"])
         next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["evening", "night"])
+    if (
+        any(token in lowered for token in ("museum", "gallery", "art", "culture", "미술관", "박물관", "갤러리", "예술", "아트", "전시"))
+        and not _has_museum_deprioritize_signal(source_text)
+    ):
+        next_travel_style = _merge_unique(next_travel_style, ["museum", "art", "culture"])
+        if not any(str(value).strip() for value in next_must_include):
+            next_must_include = _merge_unique(next_must_include, ["오르세 미술관"])
     if any(token in lowered for token in ("sunset", "석양", "선셋")):
         next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["evening"])
     if any(token in lowered for token in ("brunch", "브런치", "늦은 아침", "늦은아침")):
         next_meal_preference = _merge_unique(next_meal_preference, ["brunch"])
-        next_travel_style = _merge_unique(next_travel_style, ["cafe", "foodie"])
-        next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["morning", "lunch"])
+        next_travel_style = _merge_unique(next_travel_style, ["foodie"])
+        next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["lunch"])
     if any(token in lowered for token in ("dinner", "디너", "저녁 식사", "저녁은", "프렌치 디너")):
         next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["evening"])
     if any(token in lowered for token in ("cafe", "coffee", "카페")):
@@ -858,21 +907,30 @@ def _apply_text_fallbacks(
     if any(token in lowered for token in ("french", "프렌치", "브라세리", "비스트로")):
         next_meal_preference = _merge_unique(next_meal_preference, ["french", "bistro"])
         next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["evening"])
-    compact_source = source_text.replace(" ", "")
+    if _has_vegetarian_signal(source_text):
+        next_meal_preference = _merge_unique(next_meal_preference, ["vegetarian"])
     if any(token in lowered or token in compact_source for token in ("meal", "restaurant", "\uc2dd\uc0ac\uc7a5\uc18c", "\uc2dd\uc0ac", "\ubc25")):
         next_meal_preference = _merge_unique(next_meal_preference, ["meal_preference"])
-    jazz_avoided = any(_has_avoid_cue_near_alias(source_text, token) for token in ("jazz", "재즈", "재즈바", "jazz bar"))
+    jazz_avoided = _has_negative_jazz_or_nightlife_signal(source_text) or any(
+        _has_avoid_cue_near_alias(source_text, token) for token in ("jazz", "재즈", "재즈바", "jazz bar")
+    )
     if any(token in lowered for token in ("jazz", "재즈", "재즈바", "jazz bar")) and not jazz_avoided:
         next_meal_preference = _merge_unique(next_meal_preference, ["jazz_bar"])
-        next_travel_style = _merge_unique(next_travel_style, ["jazz", "nightlife", "local"])
+        next_travel_style = _merge_unique(next_travel_style, ["jazz", "nightlife"])
         next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["evening", "night"])
     elif jazz_avoided:
         next_meal_preference = [value for value in next_meal_preference if str(value).lower() not in {"jazz", "jazz_bar", "bar", "wine"}]
         next_travel_style = [value for value in next_travel_style if str(value).lower() not in {"jazz", "nightlife"}]
-    if any(token in lowered for token in ("local", "로컬", "골목", "마레")):
+    if any(token in lowered for token in ("local", "로컬", "골목", "마레", "생제르맹", "saint-germain", "saint germain")):
         next_travel_style = _merge_unique(next_travel_style, ["local"])
     if any(token in lowered for token in ("photo", "사진", "포토", "인생샷")):
         next_travel_style = _merge_unique(next_travel_style, ["photo"])
+    if any(token in lowered or token in compact_source for token in ("indoor", "실내", "비오는", "비 오는", "우천", "rain", "rainy")):
+        next_travel_style = _merge_unique(next_travel_style, ["indoor"])
+    if any(token in lowered or token in compact_source for token in ("bar", "wine bar", "와인바", "바 분위기", "바분위기", "칵테일", "cocktail")):
+        next_meal_preference = _merge_unique(next_meal_preference, ["bar"])
+        next_travel_style = _merge_unique(next_travel_style, ["nightlife"])
+        next_preferred_time_slots = _merge_unique(next_preferred_time_slots, ["evening", "night"])
     if _has_slow_signal(source_text):
         next_travel_style = _merge_unique(next_travel_style, ["slow"])
     next_must_include, next_must_avoid = _resolve_place_preference_conflicts(next_must_include, next_must_avoid)
@@ -963,7 +1021,10 @@ def _derive_agent_constraint_harness(
         if not _contains_place_alias(source_text, aliases):
             continue
         canonical_aliases = _constraint_aliases(canonical)
-        intent = _scoped_place_intent(source_text, aliases)
+        if canonical == "르 카보 드 라 위셰트" and _has_negative_jazz_or_nightlife_signal(source_text):
+            intent = "avoid"
+        else:
+            intent = _scoped_place_intent(source_text, aliases)
         if intent is None:
             if canonical_aliases & avoid_aliases:
                 intent = "avoid"
@@ -1095,20 +1156,18 @@ def _scoped_place_intent(source_text: str, aliases: tuple[str, ...]) -> str | No
         post_alias = normalized[start + len(alias_norm) : start + len(alias_norm) + 24]
         post_next_alias = _next_alias_offset(post_alias)
         scoped_post_alias = post_alias[:post_next_alias] if post_next_alias >= 0 else post_alias
+        after = normalized[start + len(alias_norm) : start + len(alias_norm) + 30]
+        next_alias = _next_alias_offset(after)
+        scoped_after = after[:next_alias] if next_alias >= 0 else after
+        before = normalized[max(0, start - 14) : start]
+        if _has_avoid_cue_near_alias(source_text, alias) or _has_scoped_avoid_cue(before, scoped_after):
+            return "avoid"
         if _has_include_cue_in_scope(scoped_post_alias):
             return "include"
         include_near_alias = _has_include_cue_near_alias(source_text, alias)
         previous_alias = _previous_place_alias_index_before(source_text, start)
         if include_near_alias and (previous_alias < 0 or previous_alias < max(0, start - 14)):
             return "include"
-        elif _has_avoid_cue_near_alias(source_text, alias):
-            return "avoid"
-        after = normalized[start + len(alias_norm) : start + len(alias_norm) + 30]
-        next_alias = _next_alias_offset(after)
-        scoped_after = after[:next_alias] if next_alias >= 0 else after
-        before = normalized[max(0, start - 14) : start]
-        if _has_scoped_avoid_cue(before, scoped_after):
-            return "avoid"
         if _has_scoped_include_cue(before, scoped_after):
             return "include"
     return None
@@ -1268,45 +1327,52 @@ def _scoped_final_for_alias(source_text: str, aliases: tuple[str, ...]) -> bool:
         alias_norm = _normalize_name(alias)
         if not alias_norm:
             continue
-        start = normalized.find(alias_norm)
-        if start < 0:
-            continue
-        end = start + len(alias_norm)
-        previous_alias = _previous_place_alias_index_before(source_text, start)
-        next_alias = _next_place_alias_index_after(source_text, start)
-        scope_start = max(previous_alias + 1 if previous_alias >= 0 else 0, start - 22)
-        scope_end = min(next_alias if next_alias >= 0 else len(normalized), end + 28)
-        before = normalized[scope_start:start]
-        after = normalized[end:scope_end]
-        if "\uc55e\uc5d0\ub294" in before:
-            continue
-        if "\ub05d\ub0b4\uace0" in before:
-            continue
-        truncated_before_next_alias = False
-        if "\uc55e\uc5d0\ub294" in after:
-            after = after[: after.find("\uc55e\uc5d0\ub294")]
-            truncated_before_next_alias = True
-        if after.startswith("\ub97c\ub05d\ub0b4\uace0") or after.startswith("\uc744\ub05d\ub0b4\uace0") or after.startswith("\ub05d\ub0b4\uace0"):
-            continue
-        before_has_final = any(
-            before.endswith(_normalize_name(cue))
-            or before.endswith(f"{_normalize_name(cue)}\uc740")
-            or before.endswith(f"{_normalize_name(cue)}\ub294")
-            or before.endswith(f"{_normalize_name(cue)}\uc744")
-            or before.endswith(f"{_normalize_name(cue)}\ub97c")
-            for cue in final_cues
-            if _normalize_name(cue)
-        ) or before.endswith("\ub9c8\uc9c0\ub9c9anchor\ub294") or before.endswith("\ub9c8\uc9c0\ub9c9\uc575\ucee4\ub294")
-        after_has_final = any(_normalize_name(cue) in after for cue in final_cues)
-        if after_has_final:
-            cue_positions = [after.find(_normalize_name(cue)) for cue in final_cues if _normalize_name(cue) in after]
-            cue_index = min(cue_positions) if cue_positions else -1
-            if cue_index >= 0 and _final_cue_belongs_to_later_activity(after[:cue_index]):
-                after_has_final = False
-        if after_has_final and next_alias >= 0 and not truncated_before_next_alias:
-            continue
-        if before_has_final or after_has_final:
-            return True
+        search_from = 0
+        while True:
+            start = normalized.find(alias_norm, search_from)
+            if start < 0:
+                break
+            end = start + len(alias_norm)
+            previous_alias = _previous_place_alias_index_before(source_text, start)
+            next_alias = _next_place_alias_index_after(source_text, start)
+            scope_start = max(previous_alias + 1 if previous_alias >= 0 else 0, start - 22)
+            scope_end = min(next_alias if next_alias >= 0 else len(normalized), end + 28)
+            before = normalized[scope_start:start]
+            after = normalized[end:scope_end]
+            if "\uc55e\uc5d0\ub294" in before:
+                search_from = end
+                continue
+            if "\ub05d\ub0b4\uace0" in before:
+                search_from = end
+                continue
+            truncated_before_next_alias = False
+            if "\uc55e\uc5d0\ub294" in after:
+                after = after[: after.find("\uc55e\uc5d0\ub294")]
+                truncated_before_next_alias = True
+            if after.startswith("\ub97c\ub05d\ub0b4\uace0") or after.startswith("\uc744\ub05d\ub0b4\uace0") or after.startswith("\ub05d\ub0b4\uace0"):
+                search_from = end
+                continue
+            before_has_final = any(
+                before.endswith(_normalize_name(cue))
+                or before.endswith(f"{_normalize_name(cue)}\uc740")
+                or before.endswith(f"{_normalize_name(cue)}\ub294")
+                or before.endswith(f"{_normalize_name(cue)}\uc744")
+                or before.endswith(f"{_normalize_name(cue)}\ub97c")
+                for cue in final_cues
+                if _normalize_name(cue)
+            ) or before.endswith("\ub9c8\uc9c0\ub9c9anchor\ub294") or before.endswith("\ub9c8\uc9c0\ub9c9\uc575\ucee4\ub294")
+            after_has_final = any(_normalize_name(cue) in after for cue in final_cues)
+            if after_has_final:
+                cue_positions = [after.find(_normalize_name(cue)) for cue in final_cues if _normalize_name(cue) in after]
+                cue_index = min(cue_positions) if cue_positions else -1
+                if cue_index >= 0 and _final_cue_belongs_to_later_activity(after[:cue_index]):
+                    after_has_final = False
+            if after_has_final and next_alias >= 0 and not truncated_before_next_alias:
+                search_from = end
+                continue
+            if before_has_final or after_has_final:
+                return True
+            search_from = end
     return False
 
 
@@ -1316,7 +1382,6 @@ def _final_cue_belongs_to_later_activity(text_before_final_cue: str) -> bool:
         for token in (
             "\uc624\ud6c4",
             "\uce74\ud398",
-            "\uc0b0\ucc45",
             "\uc2dd\uc0ac",
             "\uc800\ub141",
             "\ube0c\ub7f0\uce58",
@@ -1381,6 +1446,7 @@ def _canonical_place_key(target: str) -> str | None:
         "notre": ("노트르담", "notre"),
         "sainte": ("생트샤펠", "sainte", "chapelle"),
         "marais": ("마레", "marais"),
+        "saint_germain": ("생제르맹", "saintgermain", "saint-germain"),
         "montmartre": ("몽마르트", "montmartre"),
         "arc": ("개선문", "arc"),
         "champs": ("샹젤리제", "champs"),
@@ -1663,8 +1729,6 @@ def _avoid_cue_belongs_to_category_subject(text_before_avoid: str) -> bool:
             "\uc7ac\uc988\ubc14",
             "\ub108\ubb34\ub9ce\uc774",
             "\ub9ce\uc774",
-            "\uc7a5\uc18c",
-            "\uc77c\uc815",
         )
     )
 
@@ -1746,6 +1810,8 @@ def _has_generic_museum_include_signal(source_text: str) -> bool:
     compact = _normalize_name(source_text)
     if _has_museum_avoid_signal(source_text):
         return False
+    if _has_museum_deprioritize_signal(source_text):
+        return False
     if any(token in compact for token in ("\ub8e8\ube0c\ub974", "\uc624\ub974\uc138", "louvre", "orsay")):
         return False
     if any(token in compact for token in ("\ubbf8\uc220\uad00", "\ubc15\ubb3c\uad00", "\uc2e4\ub0b4", "\uc804\uc2dc", "museum", "gallery", "indoor")):
@@ -1753,6 +1819,22 @@ def _has_generic_museum_include_signal(source_text: str) -> bool:
     if any(token in compact for token in ("루브르", "오르세")):
         return False
     return any(token in compact for token in ("미술관", "박물관", "전시"))
+
+
+def _has_museum_deprioritize_signal(source_text: str) -> bool:
+    compact = _normalize_name(source_text)
+    return any(
+        token in compact
+        for token in (
+            "박물관보다",
+            "박물관보단",
+            "미술관보다",
+            "미술관보단",
+            "museum보다",
+            "museumover",
+            "gallery보다",
+        )
+    )
 
 
 def _has_generic_park_signal(source_text: str) -> bool:
@@ -1769,13 +1851,107 @@ def _has_cathedral_course_signal(source_text: str) -> bool:
     return any(token in compact for token in ("\uc131\ub2f9\ucf54\uc2a4", "\uc131\ub2f9\uc0b0\ucc45", "\uc2dc\ud14c\uc12c", "cathedralcourse", "churchcourse"))
 
 
+def _has_cathedral_avoid_signal(source_text: str) -> bool:
+    compact = _normalize_name(source_text)
+    return any(
+        token in compact
+        for token in (
+            "성당이나종교건축물은빼",
+            "성당이나종교건축물빼",
+            "성당이나종교건축물은제외",
+            "성당이나종교건축물제외",
+            "종교건축물은빼",
+            "종교건축물빼",
+            "종교건축물은제외",
+            "종교건축물제외",
+            "성당은빼",
+            "성당빼",
+            "성당은제외",
+            "성당제외",
+            "교회는빼",
+            "교회빼",
+            "religiousarchitecture",
+            "avoidchurch",
+            "avoidcathedral",
+        )
+    )
+
+
+def _has_vegetarian_signal(source_text: str) -> bool:
+    compact = _normalize_name(source_text)
+    return any(
+        token in compact
+        for token in (
+            "채식",
+            "채식위주",
+            "비건",
+            "vegetarian",
+            "vegan",
+            "plantbased",
+        )
+    )
+
+
+def _has_negative_jazz_or_nightlife_signal(source_text: str) -> bool:
+    compact = _normalize_name(source_text)
+    return any(
+        token in compact
+        for token in (
+            "재즈바같은밤장소는빼",
+            "재즈바같은밤장소빼",
+            "재즈바는빼",
+            "재즈바빼",
+            "재즈는빼",
+            "재즈빼",
+            "밤장소는빼",
+            "밤장소빼",
+            "nightlifeavoid",
+            "avoidjazzbar",
+            "avoidnightlife",
+        )
+    )
+
+
+def _has_landmark_minimize_signal(source_text: str) -> bool:
+    compact = _normalize_name(source_text)
+    return any(
+        token in compact
+        for token in (
+            "유명한랜드마크는최소화",
+            "유명한랜드마크최소화",
+            "랜드마크는최소화",
+            "랜드마크최소화",
+            "유명관광지는너무많지않게",
+            "유명관광지너무많지않게",
+            "유명관광지는많지않게",
+            "유명관광지많지않게",
+            "유명관광지는적게",
+            "유명관광지적게",
+            "대표관광지많지않게",
+            "대표명소는최소화",
+            "관광지는최소화",
+            "관광지최소화",
+            "덜관광지",
+            "lesstouristy",
+        )
+    )
+
+
 def _has_famous_landmark_signal(source_text: str) -> bool:
     compact = _normalize_name(source_text)
+    if _has_landmark_minimize_signal(source_text):
+        return False
     return any(
         token in compact
         for token in (
             "\uc720\uba85\uad00\uad11\uc9c0",
             "\uc720\uba85\ud55c\uad00\uad11\uc9c0",
+            "\uad00\uad11\uc9c0\uc911\uc2ec",
+            "\uad00\uad11\uc9c0\uc704\uc8fc",
+            "\uad00\uad11\uc911\uc2ec",
+            "\uad00\uad11\uc704\uc8fc",
+            "\uba85\uc18c\uc911\uc2ec",
+            "\uba85\uc18c\uc704\uc8fc",
             "\ub300\ud45c\uba85\uc18c",
             "\ub79c\ub4dc\ub9c8\ud06c",
             "\ucc98\uc74c\uac00\ub294\ud30c\ub9ac",
@@ -1975,6 +2151,9 @@ def _has_slow_signal(source_text: str) -> bool:
             "너무많이걷지",
             "이동을줄",
             "부담스럽지",
+            "빡세지않게",
+            "너무빡세지않게",
+            "무리하지않게",
             "장소는적게",
             "4곳이하",
             "세곳정도",
@@ -2002,6 +2181,10 @@ def _has_family_or_low_walking_signal(source_text: str, *tag_groups: list[str]) 
             "kids",
             "\ub9ce\uc774\uac77\uae30\uc2eb",
             "\ub9ce\uc774\uc548\uac77",
+            "\ub9ce\uc774\uac77\ub294\uac74\uc2eb",
+            "\ub9ce\uc774\uac77\ub294\uac74\uc2eb\uc5b4",
+            "\uc624\ub798\uac77\ub294\uac74\ud53c\ud558",
+            "\uc801\uac8c\uac77",
             "\ub3c4\ubcf4\ubd80\ub2f4",
             "\uac77\ub294\uac70\uc2eb",
             "\uc774\ub3d9\uac15\ub3c4\ub0ae",
@@ -2029,7 +2212,37 @@ def _safe_int(value: Any, default: int) -> int:
 def _has_fast_signal(source_text: str) -> bool:
     lowered = source_text.lower()
     compact = source_text.replace(" ", "")
-    return any(token in lowered or token in compact for token in ("fast", "packed", "dense", "busy", "빡빡", "타이트", "꽉채워", "알차게"))
+    return any(token in lowered or token in compact for token in ("fast", "packed", "dense", "busy", "빡빡", "타이트", "꽉채워", "꽉차게", "알차게"))
+
+
+def _has_early_start_signal(source_text: str) -> bool:
+    if _has_late_start_signal(source_text):
+        return False
+    lowered = source_text.lower()
+    compact = source_text.replace(" ", "").lower()
+    phrase_tokens = (
+        "start early",
+        "early start",
+        "morning start",
+        "early morning",
+    )
+    compact_tokens = (
+        "아침일찍",
+        "오전일찍",
+        "아침부터",
+        "오전부터",
+        "일찍시작",
+        "일찍출발",
+        "이른아침",
+        "밤부터시작하지말고",
+        "저녁부터시작하지말고",
+        "night부터시작하지말고",
+        "evening부터시작하지말고",
+        "startearly",
+        "morningstart",
+        "frommorning",
+    )
+    return any(token in lowered for token in phrase_tokens) or any(token in compact for token in compact_tokens)
 
 
 def _has_late_start_signal(source_text: str) -> bool:
@@ -2105,6 +2318,8 @@ def _locked_stop(entity: str, slug: str, target_slot: str, label: str) -> dict[s
 
 
 def _has_late_bar_lock_request(must_include: list[str], source_text: str) -> bool:
+    if _has_negative_jazz_or_nightlife_signal(source_text):
+        return False
     for value in must_include:
         if _constraint_aliases(value).intersection(set(_JAZZ_LOCK_ALIASES)):
             return True
@@ -2151,17 +2366,33 @@ def _derive_preferred_blueprints(
     must_include: list[str],
     preferred_time_slots: list[str],
 ) -> list[str]:
-    normalized_style = {str(value).lower() for value in travel_style if str(value).strip()}
+    normalized_style = {
+        "romantic" if str(value).lower().strip() == "romance" else str(value).lower().strip()
+        for value in travel_style
+        if str(value).strip()
+    }
     normalized_meal = {str(value).lower() for value in meal_preference if str(value).strip()}
     normalized_must_include = " ".join(str(value).lower() for value in must_include if str(value).strip())
-    prefers_cafe_dessert = bool(normalized_style.intersection({"cafe", "dessert", "foodie"})) or bool(
+    prefers_cafe_dessert = bool(normalized_style.intersection({"cafe", "dessert"})) or bool(
         normalized_meal.intersection({"cafe", "dessert", "coffee", "bakery"})
     )
     prefers_french_dinner = bool(normalized_meal.intersection({"french", "bistro", "brasserie", "romantic"}))
     prefers_late_bar = bool(normalized_meal.intersection({"jazz", "jazz_bar", "wine", "bar"})) or bool(normalized_style.intersection({"jazz", "nightlife"}))
+    romantic_trip = bool(normalized_style.intersection({"romantic"}))
+    landmark_trip = bool(normalized_style.intersection({"landmark", "classic"}))
+    indoor_trip = bool(normalized_style.intersection({"indoor"}))
+    art_trip = bool(normalized_style.intersection({"museum", "art", "culture"}))
     has_eiffel_night = "에펠" in normalized_must_include or "eiffel" in normalized_must_include
     late_start = bool(set(preferred_time_slots).intersection({"afternoon", "evening", "night"}))
 
+    if indoor_trip and prefers_late_bar:
+        return ["indoor_culture_day", "indoor_culture_day", "general_landmark_day"]
+    if indoor_trip and night_view_required:
+        return ["indoor_culture_day", "museum_focused_day", "romantic_evening_day"]
+    if indoor_trip:
+        return ["indoor_culture_day", "museum_focused_day", "general_landmark_day"]
+    if art_trip:
+        return ["museum_focused_day", "general_landmark_day", "museum_focused_day"]
     if pace == "slow" and prefers_cafe_dessert and night_view_required and has_eiffel_night and prefers_french_dinner:
         return ["slow_cafe_evening_day", "romantic_evening_day", "slow_cafe_day"]
     if night_view_required and has_eiffel_night:
@@ -2170,6 +2401,12 @@ def _derive_preferred_blueprints(
         return ["slow_cafe_day", "romantic_evening_day" if late_start else "general_landmark_day"]
     if night_view_required:
         return ["romantic_evening_day", "night_view_focused_day"]
+    if romantic_trip and pace == "slow" and landmark_trip:
+        return ["romantic_evening_day", "general_landmark_day", "slow_cafe_day", "romantic_evening_day"]
+    if romantic_trip and pace == "slow":
+        return ["romantic_evening_day", "slow_cafe_day", "general_landmark_day"]
+    if romantic_trip and landmark_trip:
+        return ["romantic_evening_day", "general_landmark_day"]
     if prefers_late_bar or (prefers_french_dinner and late_start):
         return ["romantic_evening_day", "slow_cafe_day"]
     return []
@@ -2193,14 +2430,17 @@ def _select_replan_blueprints(
             preferred_time_slots=list(planning_brief.get("preferred_time_slots") or []),
         )
     lowered = reason.lower()
-    if any(token in lowered for token in ("must_include", "night_view", "nightclimax", "night_climax", "에펠")):
+    indoor_trip = any(str(value).lower() == "indoor" for value in planning_brief.get("travel_style") or [])
+    if indoor_trip:
+        next_base = ["indoor_culture_day", "museum_focused_day", "slow_cafe_day"]
+    elif any(token in lowered for token in ("must_include", "night_view", "nightclimax", "night_climax", "에펠")):
         next_base = ["slow_cafe_evening_day", "romantic_evening_day", "night_view_focused_day"]
     elif any(token in lowered for token in ("helper", "story_flow", "quality")):
         next_base = ["slow_cafe_evening_day", "slow_cafe_day", "romantic_evening_day"]
     else:
         next_base = base or ["general_landmark_day"]
     if previous_blueprints and next_base and previous_blueprints[0] == next_base[0]:
-        rotations = ["romantic_evening_day", "night_view_focused_day", "slow_cafe_day", "general_landmark_day"]
+        rotations = ["indoor_culture_day", "romantic_evening_day", "night_view_focused_day", "slow_cafe_day", "general_landmark_day"]
         for candidate in rotations:
             if candidate != previous_blueprints[0]:
                 next_base = [candidate, *[value for value in next_base if value != candidate]]
@@ -2258,10 +2498,53 @@ def _item_identity_text(item: dict[str, Any]) -> str:
     return _normalize_name(" ".join(values))
 
 
+def _canonical_entry_match(entry: str, canonical: str) -> bool:
+    if canonical == "eiffel":
+        return "eiffeltower" in entry or ("eiffel" in entry and "landmark" in entry)
+    if canonical == "louvre":
+        return "louvremuseum" in entry or ("louvre" in entry and "museum" in entry)
+    if canonical == "orsay":
+        return "museedorsay" in entry or ("orsay" in entry and "museum" in entry)
+    if canonical == "seine":
+        return "seineriverwalk" in entry or ("seine" in entry and "landmark" in entry)
+    if canonical == "notre":
+        return "notredame" in entry and ("cathedral" in entry or "landmark" in entry)
+    if canonical == "sainte":
+        return ("saintechapelle" in entry or "saintchapelle" in entry) and "cathedral" in entry
+    if canonical == "marais":
+        return ("lemarais" in entry or "marais" in entry) and "neighborhood" in entry
+    if canonical == "saint_germain":
+        return (
+            "saintgermain" in entry and "despres" in entry
+        ) or ("saintgermain" in entry and ("neighborhood" in entry or "landmark" in entry))
+    if canonical == "montmartre":
+        return ("montmartre" in entry or "몽마르트" in entry) and "neighborhood" in entry
+    if canonical == "arc":
+        return "arcdetriomphe" in entry or ("arc" in entry and "triomphe" in entry) or "개선문" in entry
+    if canonical == "champs":
+        return "champselysees" in entry and ("neighborhood" in entry or "landmark" in entry)
+    if canonical == "luxembourg":
+        return "luxembourggardens" in entry or ("luxembourg" in entry and "park" in entry)
+    if canonical == "tuileries":
+        return "tuileriesgarden" in entry or ("tuileries" in entry and "park" in entry)
+    if canonical == "garnier":
+        return "palaisgarnier" in entry or ("garnier" in entry and "landmark" in entry)
+    if canonical == "palais_royal":
+        return "palaisroyal" in entry or ("팔레루아얄" in entry and "landmark" in entry)
+    if canonical == "jazz":
+        return ("caveaudelahuchette" in entry or "huchette" in entry or "재즈바" in entry) and "bar" in entry
+    return False
+
+
 def _constraint_matches_catalog(value: str, catalog: list[str]) -> bool:
     aliases = _constraint_aliases(value)
+    canonical = _canonical_place_key(value)
     for entry in catalog:
         if not entry:
+            continue
+        if canonical:
+            if _canonical_entry_match(entry, canonical):
+                return True
             continue
         for alias in aliases:
             if alias == "arc" and "arcdetriomphe" not in entry and "\uac1c\uc120\ubb38" not in entry:

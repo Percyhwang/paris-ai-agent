@@ -6,7 +6,8 @@ from typing import Any
 
 from app.core import failure_types as ft
 from app.schemas.evaluation_schema import PlanEvaluationResult, PlanFailure
-from app.services.planning_brief_service import validate_planning_brief_compliance
+from app.services.daily_quality_validator_service import evaluate_itinerary_quality
+from app.services.planning_brief_service import extract_user_request_text, validate_planning_brief_compliance
 
 
 HIGH_SEVERITY_TYPES = {
@@ -27,6 +28,7 @@ FINAL_TARGET_ALIASES: dict[str, tuple[str, ...]] = {
     "jazz": ("jazz", "jazzbar", "huchette", "\uc7ac\uc988", "\uc7ac\uc988\ubc14", "\ub974\uce74\ubcf4", "\uce74\ubcf4\ub4dc\ub77c\uc704\uc170\ud2b8", "\uc704\uc170\ud2b8"),
     "montmartre": ("montmartre", "sacrecoeur", "\ubabd\ub9c8\ub974\ud2b8\ub974", "\ubabd\ub9c8\ub974\ud2b8"),
     "marais": ("marais", "lemarais", "\ub9c8\ub808"),
+    "saint_germain": ("saintgermain", "saintgermaindespres", "saint-germain", "\uc0dd\uc81c\ub974\ub9f9", "\uc0dd\uc81c\ub974\ub9f9\ub370\ud504\ub808"),
     "tuileries": ("tuileries", "tuileriesgarden", "\ud280\ub974\ub9ac", "\ud290\ub974\ub9ac"),
     "luxembourg": ("luxembourg", "luxembourggardens", "\ub8e9\uc0c1\ubd80\ub974"),
     "garnier": ("garnier", "palaisgarnier", "opera", "\uac00\ub974\ub2c8\uc5d0", "\uc624\ud398\ub77c"),
@@ -45,6 +47,7 @@ def evaluate_plan(
 ) -> dict[str, Any]:
     """Return an Agent-facing, structured evaluation for a generated itinerary."""
 
+    prompt = extract_user_request_text(prompt)
     brief = planning_brief or {}
     legacy = validate_planning_brief_compliance(itinerary_days, brief)
     failures: list[dict[str, Any]] = []
@@ -145,6 +148,19 @@ def evaluate_plan(
 
     failures.extend(_structured_constraint_failures(itinerary_days, brief))
     failures.extend(_raw_constraint_failures(itinerary_days, brief, prompt))
+    itinerary_quality = evaluate_itinerary_quality(
+        itinerary_days,
+        brief,
+        prompt=prompt,
+        language=language,
+    )
+    for issue in itinerary_quality.get("issue_details") or []:
+        if not isinstance(issue, dict):
+            continue
+        severity = str(issue.get("severity") or "warning")
+        if severity == "warning":
+            continue
+        failures.append(_quality_issue_failure(issue))
 
     final_target = str(brief.get("final_anchor") or "").strip() or _requested_final_target(brief, prompt)
     if final_target and not _final_item_matches(itinerary_days, final_target):
@@ -171,13 +187,25 @@ def evaluate_plan(
         "mobility": "failed" if any(f["type"] == "low_walking_violation" for f in failures) else "passed",
         "final_anchor": "failed" if any(f["type"] == "final_anchor_mismatch" for f in failures) else "passed",
         "ordered_anchors": "failed" if any(f["type"] == "order_mismatch" for f in failures) else "passed",
+        "daily_quality": "failed" if not itinerary_quality.get("passed") else "passed",
+        "persona_fit": "failed" if any(f["type"] == "family_unsuitable_stop" for f in failures) else "passed",
+        "museum_density": "failed" if any(f["type"] == "museum_density_violation" for f in failures) else "passed",
+        "local_style": "failed" if any(f["type"] == "touristiness_mismatch" for f in failures) else "passed",
     }
 
     base_score = _float_score(legacy.get("final_quality_score") or legacy.get("score"), default=0.0)
-    score = _adjusted_score(base_score, failures, checks)
+    legacy_score = _adjusted_score(base_score, failures, checks)
+    quality_score_100 = round(_float_score(itinerary_quality.get("score"), default=0.0), 2)
+    score = round(min(legacy_score, quality_score_100 / 100.0), 2)
     hard_failures = [failure for failure in failures if failure.get("severity") == "hard"]
     soft_failures = [failure for failure in failures if failure.get("severity") == "soft"]
-    passed = bool(legacy.get("is_valid")) and score >= 0.78 and not hard_failures
+    passed = (
+        bool(legacy.get("is_valid"))
+        and bool(itinerary_quality.get("passed"))
+        and quality_score_100 >= 80.0
+        and score >= 0.78
+        and not hard_failures
+    )
     evaluation_result = PlanEvaluationResult(
         score=score,
         is_acceptable=passed,
@@ -190,17 +218,26 @@ def evaluate_plan(
         _failure("warning", "low", str(value), target=str(value))
         for value in legacy.get("warnings") or []
     ]
+    warnings.extend(
+        _failure("warning", "low", str(issue.get("message") or ""), target=str(issue.get("code") or ""))
+        for issue in itinerary_quality.get("issue_details") or []
+        if isinstance(issue, dict) and str(issue.get("severity") or "") == "warning"
+    )
     feedback = _feedback_lines(passed, checks, failures, warnings, language=language)
 
     return {
         "passed": passed,
         "is_acceptable": evaluation_result.is_acceptable,
         "score": score,
+        "quality_score_100": quality_score_100,
         "checks": checks,
         "failures": failures,
         "hard_failures": [failure.model_dump() for failure in evaluation_result.hard_failures],
         "soft_failures": [failure.model_dump() for failure in evaluation_result.soft_failures],
         "evaluation_result": evaluation_result.model_dump(),
+        "itinerary_quality": itinerary_quality,
+        "daily_quality": list(itinerary_quality.get("days") or []),
+        "repair_suggestions": list(itinerary_quality.get("repair_suggestions") or []),
         "warnings": warnings,
         "summary": _summary_lines(passed, checks, failures),
         "feedback": feedback,
@@ -216,11 +253,15 @@ def public_evaluation(evaluation: dict[str, Any] | None) -> dict[str, Any] | Non
         "passed": bool(evaluation.get("passed")),
         "is_acceptable": bool(evaluation.get("is_acceptable", evaluation.get("passed"))),
         "score": evaluation.get("score"),
+        "quality_score_100": evaluation.get("quality_score_100"),
         "checks": dict(evaluation.get("checks") or {}),
         "failures": list(evaluation.get("failures") or []),
         "hard_failures": list(evaluation.get("hard_failures") or []),
         "soft_failures": list(evaluation.get("soft_failures") or []),
         "evaluation_result": dict(evaluation.get("evaluation_result") or {}),
+        "itinerary_quality": dict(evaluation.get("itinerary_quality") or {}),
+        "daily_quality": list(evaluation.get("daily_quality") or []),
+        "repair_suggestions": list(evaluation.get("repair_suggestions") or []),
         "warnings": list(evaluation.get("warnings") or []),
         "summary": list(evaluation.get("summary") or []),
         "feedback": list(evaluation.get("feedback") or evaluation.get("natural_language_feedback") or []),
@@ -253,6 +294,11 @@ def should_replan(evaluation: dict[str, Any] | None) -> bool:
     if not evaluation.get("passed"):
         return True
     try:
+        if float(evaluation.get("quality_score_100") or 0) < 80.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
         return float(evaluation.get("score") or 0) < 0.82
     except (TypeError, ValueError):
         return False
@@ -279,6 +325,18 @@ def _failure(issue_type: str, severity: str, message: str, *, target: str | None
     return data
 
 
+def _quality_issue_failure(issue: dict[str, Any]) -> dict[str, Any]:
+    code = str(issue.get("code") or "quality_issue").strip()
+    message = str(issue.get("message") or code).strip()
+    raw_target = issue.get("target")
+    target = str(raw_target).strip() if raw_target is not None else ""
+    if not target:
+        target = str(issue.get("code") or "").strip()
+    target = target or None
+    severity = "high" if code in {"excluded_category_present"} else "medium"
+    return _failure(code, severity, message, target=target)
+
+
 def _canonical_failure(issue_type: str, severity: str, target: str | None) -> tuple[str, str, str | None]:
     if issue_type == "missing_required_anchor":
         return ft.MUST_INCLUDE_MISSING, "hard", "insert_place"
@@ -294,6 +352,8 @@ def _canonical_failure(issue_type: str, severity: str, target: str | None) -> tu
         return ft.DUPLICATE_DAY_PATTERN, "hard", "regenerate_duplicate_days"
     if issue_type == "low_walking_violation":
         return ft.LOW_WALKING_VIOLATION, "hard", "reduce_walking_burden"
+    if issue_type == "locked_stop_unresolved":
+        return ft.PLACE_RESOLUTION_FAILED, "hard", None
     if issue_type == "time_slot_mismatch":
         return ft.TIME_SLOT_MISMATCH, "soft", "move_place_to_time_slot"
     if issue_type == "pace_mismatch":
@@ -306,6 +366,46 @@ def _canonical_failure(issue_type: str, severity: str, target: str | None) -> tu
         return ft.STORY_FLOW_WEAK, "soft", "improve_story_flow"
     if issue_type == "museum_limit_violation":
         return ft.TRAVEL_STYLE_MISMATCH, "soft", "reduce_repetitive_category"
+    if issue_type == "museum_density_violation":
+        return ft.MUSEUM_DENSITY_VIOLATION, "soft", "reduce_museum_density"
+    if issue_type == "too_many_cafes":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "reduce_cafe_breaks"
+    if issue_type == "consecutive_cafe_chain":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "break_cafe_chain"
+    if issue_type == "consecutive_restaurant_chain":
+        return ft.STORY_FLOW_WEAK, "soft", "rebalance_meal_spacing"
+    if issue_type == "family_unsuitable_stop":
+        return ft.PERSONA_MISMATCH, "soft", "swap_for_family_friendly_stop"
+    if issue_type == "touristiness_mismatch":
+        return ft.TOURISTINESS_MISMATCH, "soft", "replace_with_quieter_local_alternative"
+    if issue_type == "concept_mismatch":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "rebalance_requested_concepts"
+    if issue_type == "repetitive_category":
+        return ft.STORY_FLOW_WEAK, "soft", "rebalance_categories"
+    if issue_type == "main_activity_missing":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "insert_main_activity"
+    if issue_type == "low_category_diversity":
+        return ft.STORY_FLOW_WEAK, "soft", "increase_category_diversity"
+    if issue_type == "pace_density_mismatch":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "rebalance_pace_density"
+    if issue_type in {"lunch_timing_bad", "dinner_timing_bad"}:
+        return ft.TIME_SLOT_MISMATCH, "soft", "move_place_to_time_slot"
+    if issue_type == "art_focus_missing":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "insert_art_anchor"
+    if issue_type == "excluded_category_present":
+        return ft.MUST_AVOID_INCLUDED, "hard", "remove_place"
+    if issue_type == "meal_heavy_day":
+        return ft.TRAVEL_STYLE_MISMATCH, "soft", "reduce_meal_heaviness"
+    if issue_type == "fatigue_without_break":
+        return ft.STORY_FLOW_WEAK, "soft", "insert_recovery_stop"
+    if issue_type == "night_overload":
+        return ft.STORY_FLOW_WEAK, "soft", "soften_night_tail"
+    if issue_type == "theme_missing":
+        return ft.STORY_FLOW_WEAK, "soft", "regenerate_day_theme"
+    if issue_type == "generic_description_repetition":
+        return ft.STORY_FLOW_WEAK, "soft", "rewrite_descriptions"
+    if issue_type == "experience_monotony":
+        return ft.STORY_FLOW_WEAK, "soft", "increase_experience_variety"
     if issue_type == "warning":
         return ft.STORY_FLOW_WEAK, "soft", None
     normalized = "hard" if severity == "high" else "soft"
@@ -434,10 +534,46 @@ def _feedback_message(failure: dict[str, Any], *, ko: bool) -> str:
         return f"요청한 방문 순서가 일정에 제대로 반영되지 않았습니다: {target}"
     if issue_type == "pace_mismatch":
         return "일정 밀도가 사용자가 원하는 여행 속도와 맞지 않습니다."
+    if issue_type == "museum_density_violation":
+        return "하루 안에 무거운 미술관/전시 블록이 과하게 몰려 있어 실제 여행 피로도가 높습니다."
+    if issue_type == "family_unsuitable_stop":
+        return f"{target or '일부 장소'}가 가족/아이 동반 여행의 리듬과 맞지 않습니다."
+    if issue_type == "touristiness_mismatch":
+        return "로컬하고 덜 관광지스러운 분위기 요청에 비해 상징 명소 위주로 일정이 쏠려 있습니다."
     if issue_type == "helper_gap_quality":
         return "빈 시간/보조 블록이 많아 하루 흐름이 약합니다."
     if issue_type == "story_flow_issue":
         return "하루의 감정 흐름이나 장소 연결이 자연스럽지 않습니다."
+    if issue_type == "too_many_cafes":
+        return "카페가 너무 많아 하루가 근처 장소 나열처럼 느껴집니다."
+    if issue_type == "consecutive_cafe_chain":
+        return "카페가 연달아 붙어 있어 하루 리듬이 단조롭게 느껴집니다."
+    if issue_type == "consecutive_restaurant_chain":
+        return "식당이 연속 배치되어 식사 사이의 여행 경험이 부족합니다."
+    if issue_type == "main_activity_missing":
+        return "하루를 대표하는 메인 액티비티가 빠져 있습니다."
+    if issue_type == "low_category_diversity":
+        return "장소 카테고리 다양성이 부족해 하루 경험이 단조롭습니다."
+    if issue_type == "pace_density_mismatch":
+        return "장소 수와 호흡이 사용자가 원한 여행 속도와 맞지 않습니다."
+    if issue_type == "lunch_timing_bad":
+        return "점심 시간이 비정상적이라 하루 리듬이 어색합니다."
+    if issue_type == "dinner_timing_bad":
+        return "저녁 시간이 비정상적이라 하루 마무리가 어색합니다."
+    if issue_type == "art_focus_missing":
+        return "미술관·예술 여행 의도가 하루 일정에 반영되지 않았습니다."
+    if issue_type == "meal_heavy_day":
+        return "식당과 카페 비중이 너무 높아 여행 경험 가치가 떨어집니다."
+    if issue_type == "fatigue_without_break":
+        return "체력 소모가 큰 일정 뒤에 쉬는 구간이 없어 실제 여행 리듬이 거칠게 느껴집니다."
+    if issue_type == "night_overload":
+        return "밤 일정이 너무 무거워 하루 마무리가 실제 여행처럼 자연스럽지 않습니다."
+    if issue_type == "theme_missing":
+        return "그날의 테마가 약해서 하루를 한 문장으로 설명하기 어렵습니다."
+    if issue_type == "generic_description_repetition":
+        return "설명이 너무 비슷하게 반복되어 장소 의미가 흐려집니다."
+    if issue_type == "experience_monotony":
+        return "걷기·식사·감상 역할 구성이 단조롭습니다."
     return str(failure.get("message") or issue_type)
 
 
@@ -538,6 +674,18 @@ def _raw_constraint_failures(
                     "high",
                     "Raw request asks for a later start, but the itinerary starts before 10:00.",
                     target="late_start",
+                )
+            )
+
+    if _raw_early_start_requested(compact):
+        first_minutes = _first_item_minutes(itinerary_days)
+        if first_minutes is None or first_minutes >= 11 * 60 + 30:
+            failures.append(
+                _failure(
+                    "time_slot_mismatch",
+                    "high",
+                    "Raw request asks for a morning start, but the itinerary begins after the morning window.",
+                    target="early_start",
                 )
             )
 
@@ -743,6 +891,9 @@ def _avoid_cue_belongs_to_other_subject(text_between_alias_and_cue: str) -> bool
         for token in (
             "\ubc15\ubb3c\uad00",
             "\ubbf8\uc220\uad00",
+            "\uc131\ub2f9",
+            "\uad50\ud68c",
+            "\uc885\uad50\uac74\ucd95\ubb3c",
             "\ubc24\uc77c\uc815",
             "\ubc24\ub2a6\uac8c",
             "\uc77c\uc815",
@@ -840,6 +991,27 @@ def _raw_late_start_requested(compact_text: str) -> bool:
     )
 
 
+def _raw_early_start_requested(compact_text: str) -> bool:
+    return any(
+        token in compact_text
+        for token in (
+            "\uc544\uce68\uc77c\ucc0d",
+            "\uc624\uc804\uc77c\ucc0d",
+            "\uc544\uce68\ubd80\ud130",
+            "\uc624\uc804\ubd80\ud130",
+            "\uc77c\ucc0d\uc2dc\uc791",
+            "\uc77c\ucc0d\ucd9c\ubc1c",
+            "\uc774\ub978\uc544\uce68",
+            "\ubc24\ubd80\ud130\uc2dc\uc791\ud558\uc9c0\ub9d0\uace0",
+            "\uc800\ub141\ubd80\ud130\uc2dc\uc791\ud558\uc9c0\ub9d0\uace0",
+            "startearly",
+            "earlystart",
+            "morningstart",
+            "frommorning",
+        )
+    )
+
+
 def _raw_early_finish_requested(compact_text: str) -> bool:
     return any(
         token in compact_text
@@ -876,6 +1048,8 @@ def _museum_count(itinerary_days: list[dict[str, Any]]) -> int:
 def _is_museum_item(item: dict[str, Any]) -> bool:
     place = item.get("place") or {}
     category = str(place.get("category") or "").lower()
+    if category in {"restaurant", "bistro", "brasserie", "bar", "wine_bar", "cafe", "bakery"}:
+        return False
     text = _item_text(item)
     return category in {"museum", "gallery"} or any(token in text for token in ("louvre", "orsay", "\ub8e8\ube0c\ub974", "\uc624\ub974\uc138"))
 
@@ -958,6 +1132,16 @@ def _locked_stop_failures(itinerary_days: list[dict[str, Any]], brief: dict[str,
                 )
             )
             continue
+        if _item_has_unresolved_coordinates(item):
+            failures.append(
+                _failure(
+                    "locked_stop_unresolved",
+                    "high",
+                    f"Locked stop could not be resolved to coordinates: {target}",
+                    target=target,
+                )
+            )
+            continue
         if not _slot_matches(item, target_slot):
             failures.append(
                 _failure(
@@ -968,6 +1152,15 @@ def _locked_stop_failures(itinerary_days: list[dict[str, Any]], brief: dict[str,
                 )
             )
     return failures
+
+
+def _item_has_unresolved_coordinates(item: dict[str, Any]) -> bool:
+    if str(item.get("resolutionStatus") or "").strip().lower() == "unresolved":
+        return True
+    coordinates = (item.get("place") or {}).get("coordinates")
+    if not isinstance(coordinates, dict):
+        return True
+    return coordinates.get("lat") is None or coordinates.get("lng") is None
 
 
 def _structured_slot_for_target(brief: dict[str, Any], target: str) -> str | None:
@@ -1209,8 +1402,58 @@ def _find_item(itinerary_days: list[dict[str, Any]], target: str) -> dict[str, A
     return None
 
 
+def _canonical_target(target: str) -> str | None:
+    normalized = _normalize(target)
+    if not normalized:
+        return None
+    for canonical, aliases in FINAL_TARGET_ALIASES.items():
+        alias_norms = {_normalize(alias) for alias in aliases}
+        if normalized in alias_norms or any(alias and alias in normalized for alias in alias_norms):
+            return canonical
+    return None
+
+
+def _canonical_item_match(text: str, canonical: str) -> bool:
+    if canonical == "eiffel":
+        return "eiffeltower" in text or ("eiffel" in text and "landmark" in text)
+    if canonical == "louvre":
+        return "louvremuseum" in text or ("louvre" in text and "museum" in text)
+    if canonical == "orsay":
+        return "museedorsay" in text or ("orsay" in text and "museum" in text)
+    if canonical == "seine":
+        return "seineriverwalk" in text or ("seine" in text and "landmark" in text)
+    if canonical == "notre":
+        return "notredame" in text and ("cathedral" in text or "landmark" in text)
+    if canonical == "sainte":
+        return ("saintechapelle" in text or "saintchapelle" in text) and "cathedral" in text
+    if canonical == "arc":
+        return "arcdetriomphe" in text or ("arc" in text and "triomphe" in text) or "개선문" in text
+    if canonical == "jazz":
+        return ("caveaudelahuchette" in text or "huchette" in text or "재즈바" in text) and "bar" in text
+    if canonical == "montmartre":
+        return ("montmartre" in text or "몽마르트" in text) and ("neighborhood" in text or "landmark" in text)
+    if canonical == "marais":
+        return ("lemarais" in text or "marais" in text) and "neighborhood" in text
+    if canonical == "saint_germain":
+        return (
+            "saintgermain" in text and "despres" in text
+        ) or ("saintgermain" in text and ("neighborhood" in text or "landmark" in text))
+    if canonical == "tuileries":
+        return "tuileriesgarden" in text or ("tuileries" in text and "park" in text)
+    if canonical == "luxembourg":
+        return "luxembourggardens" in text or ("luxembourg" in text and "park" in text)
+    if canonical == "garnier":
+        return "palaisgarnier" in text or ("garnier" in text and "landmark" in text)
+    if canonical == "palais_royal":
+        return "palaisroyal" in text or ("팔레루아얄" in text and "landmark" in text)
+    return False
+
+
 def _matches_target(item: dict[str, Any], target: str) -> bool:
     text = _item_text(item)
+    canonical = _canonical_target(target)
+    if canonical:
+        return _canonical_item_match(text, canonical)
     target_norms = _target_norms(target)
     return any(norm and (norm in text or text in norm) for norm in target_norms)
 

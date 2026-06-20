@@ -84,6 +84,13 @@ INTENT_PATTERNS: tuple[dict[str, Any], ...] = (
         "hidden": "오전 9시 이전 시작은 피해야 함",
     },
     {
+        "id": "early_start",
+        "kind": "time",
+        "keywords": ("아침 일찍", "오전부터", "아침부터", "일찍 시작", "early start", "morning start"),
+        "explicit": "이른 시작 선호",
+        "hidden": "첫 실질 일정이 오전 안에 시작되어야 함",
+    },
+    {
         "id": "sunset",
         "kind": "time",
         "keywords": ("노을", "석양", "sunset"),

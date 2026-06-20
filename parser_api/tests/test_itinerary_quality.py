@@ -23,6 +23,75 @@ class CreatePlanPreferenceExtractionTests(unittest.TestCase):
 
 
 class PlaceCatalogItineraryQualityTests(unittest.TestCase):
+    def test_brunch_rainy_jazz_profile_caps_cafe_density(self) -> None:
+        trip = build_itinerary(
+            {
+                "dates": {"start_date": "2026-06-29", "days": 3},
+                "preferences": {
+                    "themes": ["indoor", "night_view"],
+                    "travel_style": ["slow", "indoor"],
+                    "meal_preference": ["brunch", "jazz"],
+                    "night_view_required": True,
+                },
+                "pace": {"level": "slow"},
+                "planning_brief": {
+                    "source_text": "비 오는 날이라 실내 위주로 보고 싶고 브런치는 좋지만 카페를 여러 번 넣고 싶진 않아. 재즈는 한 번만.",
+                    "travel_style": ["slow", "indoor", "night_view"],
+                    "meal_preference": ["brunch", "jazz"],
+                    "night_view_required": True,
+                    "pace": "slow",
+                    "strict_constraints": True,
+                },
+            }
+        )
+
+        for day in trip["itinerary_days"]:
+            cafe_like = [
+                item
+                for item in day["items"]
+                if (item.get("place") or {}).get("category") in {"cafe", "bakery"}
+            ]
+            self.assertLessEqual(len(cafe_like), 2)
+
+            consecutive_cafe_pairs = 0
+            real_items = [item for item in day["items"] if item.get("itemKind") != "gap"]
+            for current, nxt in zip(real_items, real_items[1:]):
+                if (current.get("place") or {}).get("category") in {"cafe", "bakery"} and (nxt.get("place") or {}).get("category") in {"cafe", "bakery"}:
+                    consecutive_cafe_pairs += 1
+            self.assertEqual(consecutive_cafe_pairs, 0)
+
+    def test_foodie_without_explicit_cafe_request_does_not_force_cafe_heavy_days(self) -> None:
+        trip = build_itinerary(
+            {
+                "dates": {"start_date": "2026-06-29", "days": 3},
+                "preferences": {
+                    "themes": ["local"],
+                    "travel_style": ["slow", "foodie", "local"],
+                    "meal_preference": ["brunch", "french"],
+                },
+                "pace": {"level": "slow"},
+                "planning_brief": {
+                    "source_text": "천천히 맛집 위주로 다니고 브런치는 한 번 정도만 넣어줘. 카페 투어는 아니야.",
+                    "travel_style": ["slow", "foodie", "local"],
+                    "meal_preference": ["brunch", "french"],
+                    "pace": "slow",
+                    "strict_constraints": True,
+                },
+            }
+        )
+
+        self.assertTrue(
+            all(
+                sum(
+                    1
+                    for item in day["items"]
+                    if (item.get("place") or {}).get("category") in {"cafe", "bakery"}
+                )
+                <= 2
+                for day in trip["itinerary_days"]
+            )
+        )
+
     def test_build_itinerary_returns_distinct_day_story_and_night_view_fields(self) -> None:
         trip = build_itinerary(
             {
@@ -70,6 +139,24 @@ class PlaceCatalogItineraryQualityTests(unittest.TestCase):
                 item.get("timeReason")
                 for day in itinerary_days
                 for item in day["items"]
+            )
+        )
+        self.assertTrue(
+            all(
+                item.get("role") and (item.get("place") or {}).get("role")
+                for day in itinerary_days
+                for item in day["items"]
+            )
+        )
+        self.assertTrue(
+            all(
+                sum(
+                    1
+                    for item in day["items"]
+                    if bool((item.get("place") or {}).get("is_cafe"))
+                )
+                <= 2
+                for day in itinerary_days
             )
         )
 
@@ -131,6 +218,28 @@ class PlaceCatalogItineraryQualityTests(unittest.TestCase):
         ]
         self.assertTrue(eiffel_items)
         self.assertTrue(all(item.get("time_slot") in {"evening", "night"} for item in eiffel_items))
+
+    def test_packed_profile_adds_higher_stop_density(self) -> None:
+        trip = build_itinerary(
+            {
+                "dates": {"start_date": "2026-06-29", "days": 2},
+                "preferences": {
+                    "themes": ["shopping", "foodie"],
+                    "travel_style": ["fast", "shopping", "foodie"],
+                    "meal_preference": ["french"],
+                    "must_include": ["루브르 박물관"],
+                },
+                "pace": {"level": "fast"},
+                "planning_brief": {
+                    "must_include": ["루브르 박물관"],
+                    "travel_style": ["shopping", "foodie", "fast"],
+                    "meal_preference": ["french"],
+                    "pace": "fast",
+                },
+            }
+        )
+
+        self.assertTrue(all(len(day["items"]) >= 7 for day in trip["itinerary_days"]))
 
     def test_slow_cafe_night_view_profile_prefers_evening_blueprint(self) -> None:
         trip = build_itinerary(
