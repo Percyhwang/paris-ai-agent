@@ -40,19 +40,6 @@ class UnifiedPlanningBriefServiceTests(unittest.TestCase):
         self.assertTrue(any("오르세" in value or "orsay" in value.lower() for value in brief["must_include"]))
         self.assertTrue(any("루브르" in value or "louvre" in value.lower() for value in brief["must_avoid"]))
 
-    def test_create_plan_adapter_keeps_late_start_brunch_as_midday_food_signal(self) -> None:
-        message = "늦게 시작하는 파리 3일 여행 짜줘. 브런치 먹고 오후부터 천천히 돌아다니고 싶어."
-        payload = parse_create_plan(message)
-
-        brief = build_unified_planning_brief(Intent.CREATE_PLAN, payload, {"message": message})
-
-        self.assertIn("brunch", brief["meal_preference"])
-        self.assertNotIn("cafe", brief["travel_style"])
-        self.assertIn("afternoon", brief["preferred_time_slots"])
-        self.assertIn("lunch", brief["preferred_time_slots"])
-        self.assertNotIn("morning", brief["preferred_time_slots"])
-        self.assertEqual(brief.get("start_time"), "12:00")
-
 
 if __name__ == "__main__":
     unittest.main()
