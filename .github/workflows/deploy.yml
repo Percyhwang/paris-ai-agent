@@ -154,13 +154,18 @@ jobs:
       - name: Build frontend for GitHub Pages
         working-directory: frontend
         env:
-          VITE_API_BASE_URL: https://paris-ai-agent.onrender.com/api
-          VITE_GOOGLE_CLIENT_ID: ""
-          VITE_GOOGLE_ALLOWED_ORIGINS: ""
+          FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
+          PUBLIC_API_BASE_URL: ${{ secrets.PUBLIC_API_BASE_URL }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_ALLOWED_ORIGINS: ${{ secrets.VITE_GOOGLE_ALLOWED_ORIGINS }}
           VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
           VITE_HOME_BACKGROUND_URL: ${{ secrets.VITE_HOME_BACKGROUND_URL }}
           VITE_STATIC_DEMO_AUTH: "false"
         run: |
+          export VITE_API_BASE_URL="${PUBLIC_API_BASE_URL:-${FRONTEND_ORIGIN%/}/api}"
+          if [ -z "${VITE_API_BASE_URL}" ] || [ "${VITE_API_BASE_URL}" = "/api" ]; then
+            export VITE_API_BASE_URL="https://paris-ai-agent.onrender.com/api"
+          fi
           npm ci
           npm run build -- --base=/paris-ai-agent/
 

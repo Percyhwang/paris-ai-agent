@@ -58,17 +58,25 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         run: |
           missing=0
           missing_names=""
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_PATH GHCR_READ_TOKEN; do
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY; do
             if [ -z "${!name}" ]; then
               echo "::notice title=CD skipped::$name secret is not configured."
               missing=1
               missing_names="${missing_names}${name} "
             fi
           done
+
+          if [ -z "${GHCR_READ_TOKEN:-}" ] && [ -z "${GHCR_TOKEN:-}" ]; then
+            echo "::notice title=CD skipped::Neither GHCR_READ_TOKEN nor GHCR_TOKEN is configured."
+            missing=1
+            missing_names="${missing_names}GHCR_READ_TOKEN/GHCR_TOKEN "
+          fi
+
           echo "missing=$missing" >> "$GITHUB_OUTPUT"
           echo "missing_names=${missing_names% }" >> "$GITHUB_OUTPUT"
 
@@ -84,19 +92,120 @@ jobs:
         if: steps.secrets_check.outputs.missing == '0'
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      - name: Trust remote host
-        if: steps.secrets_check.outputs.missing == '0'
-        env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
         run: |
           port="${DEPLOY_PORT:-22}"
-          ssh-keyscan -p "$port" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          {
+            echo "Host *"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  ConnectTimeout 20"
+            echo "  ServerAliveInterval 15"
+          } >> ~/.ssh/config
+          ssh-keyscan -T 20 -p "$port" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts || true
+
+      - name: Connect WireGuard VPN
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          WG_CONFIG: ${{ secrets.WG_CONFIG }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+
+          if [ -z "${WG_CONFIG:-}" ]; then
+            echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set."
+            exit 0
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y iputils-ping netcat-openbsd wireguard-tools
+          sudo mkdir -p /etc/wireguard
+          printf '%s\n' "$WG_CONFIG" | sudo tee /etc/wireguard/deploy.conf > /dev/null
+          sudo chmod 600 /etc/wireguard/deploy.conf
+          sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
+          sudo wg-quick up deploy
+          sudo wg show deploy
+
+          for attempt in $(seq 1 12); do
+            if nc -z -w 3 "$DEPLOY_HOST" "$port"; then
+              echo "SSH is reachable on $DEPLOY_HOST:$port"
+              exit 0
+            fi
+            echo "Waiting for SSH on $DEPLOY_HOST:$port ($attempt/12)"
+            ping -c 1 -W 2 "$DEPLOY_HOST" || true
+            sleep 5
+          done
+
+          sudo wg show deploy
+          echo "::error::SSH was not reachable on $DEPLOY_HOST:$port after WireGuard setup."
+          exit 1
+
+      - name: Create server runtime env
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MONGODB_DB: ${{ secrets.MONGODB_DB }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          ENABLE_GOOGLE_FOOD_SEARCH: ${{ secrets.ENABLE_GOOGLE_FOOD_SEARCH }}
+          GOOGLE_ROUTES_API_KEY: ${{ secrets.GOOGLE_ROUTES_API_KEY }}
+          JWT_PRIVATE_KEY: ${{ secrets.JWT_PRIVATE_KEY }}
+          JWT_PUBLIC_KEY: ${{ secrets.JWT_PUBLIC_KEY }}
+          ACCESS_TOKEN_EXPIRE_MINUTES: ${{ secrets.ACCESS_TOKEN_EXPIRE_MINUTES }}
+          REFRESH_TOKEN_EXPIRE_DAYS: ${{ secrets.REFRESH_TOKEN_EXPIRE_DAYS }}
+          WEATHER_API_URL: ${{ secrets.WEATHER_API_URL }}
+          WEATHER_CACHE_TTL_MINUTES: ${{ secrets.WEATHER_CACHE_TTL_MINUTES }}
+          EXTERNAL_AGENT_API_URL: ${{ secrets.EXTERNAL_AGENT_API_URL }}
+          LLM_DIARY_API_URL: ${{ secrets.LLM_DIARY_API_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          KIWI_RAPIDAPI_HOST: ${{ secrets.KIWI_RAPIDAPI_HOST }}
+          BOOKING_RAPIDAPI_HOST: ${{ secrets.BOOKING_RAPIDAPI_HOST }}
+        run: |
+          write_env() {
+            local key="$1"
+            local value="${2:-}"
+            value="${value//$'\r'/}"
+            value="${value//$'\n'/\\n}"
+            printf '%s=%s\n' "$key" "$value" >> /tmp/paris-ai-agent.runtime.env
+          }
+
+          pages_origin="https://${GITHUB_REPOSITORY_OWNER,,}.github.io"
+          frontend_origin_value="${FRONTEND_ORIGIN:-http://${DEPLOY_HOST}}"
+
+          case ",${frontend_origin_value}," in
+            *",${pages_origin},"*) ;;
+            *) frontend_origin_value="${frontend_origin_value},${pages_origin}" ;;
+          esac
+
+          : > /tmp/paris-ai-agent.runtime.env
+          write_env APP_ENV "production"
+          write_env MONGODB_URI "${MONGODB_URI:-mongodb://mongo:27017}"
+          write_env MONGODB_DB "${MONGODB_DB:-paris_ai_agent}"
+          write_env FRONTEND_ORIGIN "${frontend_origin_value}"
+          write_env GOOGLE_CLIENT_ID "${GOOGLE_CLIENT_ID}"
+          write_env GOOGLE_PLACES_API_KEY "${GOOGLE_PLACES_API_KEY}"
+          write_env ENABLE_GOOGLE_FOOD_SEARCH "${ENABLE_GOOGLE_FOOD_SEARCH:-true}"
+          write_env GOOGLE_ROUTES_API_KEY "${GOOGLE_ROUTES_API_KEY}"
+          write_env JWT_PRIVATE_KEY "${JWT_PRIVATE_KEY}"
+          write_env JWT_PUBLIC_KEY "${JWT_PUBLIC_KEY}"
+          write_env ACCESS_TOKEN_EXPIRE_MINUTES "${ACCESS_TOKEN_EXPIRE_MINUTES:-30}"
+          write_env REFRESH_TOKEN_EXPIRE_DAYS "${REFRESH_TOKEN_EXPIRE_DAYS:-14}"
+          write_env ALLOW_INSECURE_DEV_AUTH "false"
+          write_env WEATHER_API_URL "${WEATHER_API_URL}"
+          write_env WEATHER_CACHE_TTL_MINUTES "${WEATHER_CACHE_TTL_MINUTES:-30}"
+          write_env EXTERNAL_AGENT_API_URL "${EXTERNAL_AGENT_API_URL}"
+          write_env LLM_DIARY_API_URL "${LLM_DIARY_API_URL}"
+          write_env OPENAI_API_KEY "${OPENAI_API_KEY}"
+          write_env RAPIDAPI_KEY "${RAPIDAPI_KEY}"
+          write_env KIWI_RAPIDAPI_HOST "${KIWI_RAPIDAPI_HOST:-kiwi-com-flights-api.p.rapidapi.com}"
+          write_env BOOKING_RAPIDAPI_HOST "${BOOKING_RAPIDAPI_HOST:-booking-com15.p.rapidapi.com}"
 
       - name: Upload deployment assets
         if: steps.secrets_check.outputs.missing == '0'
@@ -107,9 +216,11 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           port="${DEPLOY_PORT:-22}"
-          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH/infra' '$DEPLOY_PATH/scripts'"
-          scp -P "$port" infra/docker-compose.prod.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/infra/docker-compose.prod.yml"
-          scp -P "$port" scripts/deploy_remote.sh "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/scripts/deploy_remote.sh"
+          app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
+          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$app_dir/infra' '$app_dir/scripts'"
+          scp -P "$port" infra/docker-compose.prod.yml "$DEPLOY_USER@$DEPLOY_HOST:$app_dir/infra/docker-compose.prod.yml"
+          scp -P "$port" scripts/deploy_remote.sh "$DEPLOY_USER@$DEPLOY_HOST:$app_dir/scripts/deploy_remote.sh"
+          scp -P "$port" /tmp/paris-ai-agent.runtime.env "$DEPLOY_USER@$DEPLOY_HOST:$app_dir/.env"
 
       - name: Upload deployment environment file
         if: steps.secrets_check.outputs.missing == '0'
@@ -118,19 +229,24 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_OWNER: ${{ steps.owner.outputs.value }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
         run: |
           port="${DEPLOY_PORT:-22}"
+          app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
+          registry_token="${GHCR_READ_TOKEN:-${GHCR_TOKEN:-}}"
+          registry_user="${GHCR_USERNAME:-${GITHUB_REPOSITORY_OWNER}}"
           cat > /tmp/paris-ai-agent.deploy.env <<EOF
-          DEPLOY_PATH=$DEPLOY_PATH
+          DEPLOY_PATH=$app_dir
           GHCR_OWNER=$GHCR_OWNER
-          GHCR_READ_TOKEN=$GHCR_READ_TOKEN
-          GHCR_USERNAME=${GITHUB_REPOSITORY_OWNER}
+          GHCR_READ_TOKEN=$registry_token
+          GHCR_USERNAME=$registry_user
           IMAGE_TAG=$IMAGE_TAG
           EOF
-          scp -P "$port" /tmp/paris-ai-agent.deploy.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.deploy.env"
+          scp -P "$port" /tmp/paris-ai-agent.deploy.env "$DEPLOY_USER@$DEPLOY_HOST:$app_dir/.deploy.env"
 
       - name: Run remote deployment
         if: steps.secrets_check.outputs.missing == '0'
@@ -141,4 +257,5 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           port="${DEPLOY_PORT:-22}"
-          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "chmod +x '$DEPLOY_PATH/scripts/deploy_remote.sh' && set -a && . '$DEPLOY_PATH/.deploy.env' && set +a && '$DEPLOY_PATH/scripts/deploy_remote.sh' && rm -f '$DEPLOY_PATH/.deploy.env'"
+          app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
+          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "chmod +x '$app_dir/scripts/deploy_remote.sh' && set -a && . '$app_dir/.deploy.env' && set +a && '$app_dir/scripts/deploy_remote.sh' && rm -f '$app_dir/.deploy.env'"
