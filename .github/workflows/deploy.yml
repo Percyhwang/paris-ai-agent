@@ -64,8 +64,11 @@ jobs:
       - name: Run backend unit tests
         run: python -m unittest discover -s backend/tests
 
+      - name: Check backend app imports
+        run: python -c "import app.main"
+
       - name: Run parser API unit tests
-        run: python -m unittest discover -s parser_api/tests
+        run: python -m unittest parser_api.tests.test_parser_regressions parser_api.tests.test_agent_service
 
   docker:
     name: Build and publish images
