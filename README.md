@@ -87,6 +87,65 @@ npm run dev
 - Frontend: `http://localhost:5173`
 - Backend API: `http://localhost:8000/api`
 
+## CI/CD
+
+이 저장소는 GitHub Actions 기반 `CI/CD` 파이프라인을 포함합니다.
+
+- CI
+  - `pull_request`와 모든 `push`에서 자동 실행
+  - Python deterministic test 실행
+  - Frontend build 검증
+  - Backend/Frontend Docker image build 검증
+  - MongoDB까지 포함한 full stack smoke test 실행
+- CD
+  - `main` 브랜치 push 시 자동 실행
+  - Backend/Frontend 이미지를 `GHCR`에 publish
+  - 배포 서버 SSH secret이 설정되어 있으면 Frontend + Backend + MongoDB 스택을 원격 서버에서 `docker compose pull && up -d`로 자동 갱신
+
+워크플로 파일:
+
+- `.github/workflows/ci-cd.yml`
+
+배포용 파일:
+
+- `infra/docker-compose.prod.yml`
+- `scripts/deploy_remote.sh`
+- `env.production.example`
+
+기본 배포 구성은 `infra/docker-compose.prod.yml` 안에 `mongo` 서비스를 포함합니다. Atlas 같은 외부 MongoDB를 쓰고 싶다면 서버의 `.env`에서 `MONGODB_URI`만 바꿔주면 됩니다.
+
+### GitHub Secrets
+
+이미지 publish와 서버 배포를 위해 아래 secret 구성을 권장합니다.
+
+- `VITE_GOOGLE_CLIENT_ID`
+- `VITE_GOOGLE_ALLOWED_ORIGINS`
+- `VITE_GOOGLE_MAPS_API_KEY`
+- `VITE_HOME_BACKGROUND_URL`
+- `DEPLOY_HOST`
+- `DEPLOY_PORT`
+- `DEPLOY_USER`
+- `DEPLOY_SSH_KEY`
+- `DEPLOY_PATH`
+- `GHCR_READ_TOKEN`
+
+`GHCR_READ_TOKEN`은 원격 서버가 `ghcr.io` 이미지를 pull 할 수 있도록 `read:packages` 권한이 있는 GitHub Personal Access Token을 사용하면 됩니다.
+
+### Remote Server Setup
+
+원격 서버에는 Docker와 Docker Compose plugin이 설치되어 있어야 하며, 배포 전에 아래 준비가 필요합니다.
+
+1. 배포 경로 예시: `/opt/paris-ai-agent`
+2. `env.production.example`을 참고해 서버에 `/opt/paris-ai-agent/.env` 생성
+3. `main` 브랜치 push 후 GitHub Actions의 `Deploy to Remote Server` job 확인
+
+제출 시에는 아래 항목을 함께 적으면 됩니다.
+
+- GitHub repo URL
+- GitHub Actions 실행 화면
+- 배포 URL
+- `GHCR + Docker Compose + SSH` 기반 자동 배포 구조 설명
+
 ## Required And Optional APIs
 
 ### Required For Local Core Flow

@@ -1,0 +1,268 @@
+name: CI-CD
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-parser-tests:
+    name: Backend and Parser Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r parser_api/requirements.txt
+
+      - name: Run deterministic itinerary tests
+        env:
+          PYTHONPATH: backend:.
+        run: |
+          python -m unittest \
+            parser_api.tests.test_planning_brief_service \
+            parser_api.tests.test_itinerary_quality \
+            backend.tests.test_planning_brief_service
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  docker-validate:
+    name: Docker Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare CI environment file
+        run: cp .env.example .env
+
+      - name: Validate docker compose syntax
+        run: docker compose config > /tmp/docker-compose.rendered.yml
+
+      - name: Build backend image
+        run: docker build -f backend/Dockerfile -t paris-ai-agent-backend:ci .
+
+      - name: Build frontend image
+        run: docker build -f frontend/Dockerfile -t paris-ai-agent-frontend:ci frontend
+
+  stack-smoke-test:
+    name: Full Stack Smoke Test
+    runs-on: ubuntu-latest
+    needs:
+      - docker-validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare CI environment file
+        run: cp .env.example .env
+
+      - name: Start full stack
+        run: docker compose up --build -d mongo backend frontend
+
+      - name: Wait for backend health
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8010/health > /tmp/backend-health.json; then
+              cat /tmp/backend-health.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Backend health check did not become ready in time." >&2
+          docker compose logs backend mongo
+          exit 1
+
+      - name: Check frontend root
+        run: |
+          curl -fsS http://127.0.0.1:4173/ > /tmp/frontend-root.html
+          head -n 20 /tmp/frontend-root.html
+
+      - name: Stop full stack
+        if: always()
+        run: docker compose down -v
+
+  publish-images:
+    name: Publish GHCR Images
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    needs:
+      - backend-parser-tests
+      - frontend-build
+      - docker-validate
+      - stack-smoke-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ghcr_owner: ${{ steps.owner.outputs.value }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalize GHCR owner
+        id: owner
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image tag
+        id: meta
+        run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.value }}/paris-ai-agent-backend:${{ steps.meta.outputs.image_tag }}
+            ghcr.io/${{ steps.owner.outputs.value }}/paris-ai-agent-backend:latest
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=/api
+            VITE_GOOGLE_CLIENT_ID=${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+            VITE_GOOGLE_ALLOWED_ORIGINS=${{ secrets.VITE_GOOGLE_ALLOWED_ORIGINS }}
+            VITE_GOOGLE_MAPS_API_KEY=${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
+            VITE_HOME_BACKGROUND_URL=${{ secrets.VITE_HOME_BACKGROUND_URL }}
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.value }}/paris-ai-agent-frontend:${{ steps.meta.outputs.image_tag }}
+            ghcr.io/${{ steps.owner.outputs.value }}/paris-ai-agent-frontend:latest
+
+  deploy-to-server:
+    name: Deploy to Remote Server
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    needs:
+      - publish-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check deployment secrets
+        id: secrets_check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          missing=0
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_PATH GHCR_READ_TOKEN; do
+            if [ -z "${!name}" ]; then
+              echo "::notice title=CD skipped::$name secret is not configured."
+              missing=1
+            fi
+          done
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare SSH key
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Trust remote host
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+          ssh-keyscan -p "$port" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload deployment assets
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH/infra' '$DEPLOY_PATH/scripts'"
+          scp -P "$port" infra/docker-compose.prod.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/infra/docker-compose.prod.yml"
+          scp -P "$port" scripts/deploy_remote.sh "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/scripts/deploy_remote.sh"
+
+      - name: Upload deployment environment file
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_OWNER: ${{ needs.publish-images.outputs.ghcr_owner }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          IMAGE_TAG: ${{ needs.publish-images.outputs.image_tag }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+          cat > /tmp/paris-ai-agent.deploy.env <<EOF
+          DEPLOY_PATH=$DEPLOY_PATH
+          GHCR_OWNER=$GHCR_OWNER
+          GHCR_READ_TOKEN=$GHCR_READ_TOKEN
+          GHCR_USERNAME=${GITHUB_REPOSITORY_OWNER}
+          IMAGE_TAG=$IMAGE_TAG
+          EOF
+          scp -P "$port" /tmp/paris-ai-agent.deploy.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.deploy.env"
+
+      - name: Run remote deployment
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "chmod +x '$DEPLOY_PATH/scripts/deploy_remote.sh' && set -a && . '$DEPLOY_PATH/.deploy.env' && set +a && '$DEPLOY_PATH/scripts/deploy_remote.sh' && rm -f '$DEPLOY_PATH/.deploy.env'"
