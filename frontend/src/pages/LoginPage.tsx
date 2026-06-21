@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Card } from "../components/common/Card";
 import { getGoogleLocale } from "../i18n/config";
+import { isStaticDemoAuthEnabled } from "../services/staticDemoAuth";
 import { useAuth } from "../store/AuthContext";
 import { useLanguage } from "../store/LanguageContext";
 
@@ -18,10 +19,11 @@ let activeGoogleCredentialHandler: ((credential: string) => Promise<void> | void
 
 const LOGIN_COPY = {
   ko: {
-    eyebrow: "Google OAuth",
-    title: "파리 여행 데이터를 안전하게 보관해요.",
-    description: "Google 계정으로 로그인하면 여행 계획, 예산, 숙소/항공권 검색, 다이어리 데이터를 계정과 함께 저장할 수 있습니다.",
-    missingClientId: "`VITE_GOOGLE_CLIENT_ID`를 설정하면 실제 Google 로그인 버튼이 표시됩니다.",
+    eyebrow: "로그인",
+    title: "파리 여행 데이터를 안전하게 저장하세요.",
+    description: "로그인하면 여행 계획, 예산, 숙소와 항공권 검색, 여행 일기를 한곳에서 관리할 수 있습니다.",
+    staticDemoNotice: "GitHub Pages 배포에서는 데모 계정으로 바로 시작할 수 있습니다.",
+    missingClientId: "`VITE_GOOGLE_CLIENT_ID`를 설정하면 Google 로그인 버튼이 표시됩니다.",
     originBlocked:
       "현재 주소에서는 Google 로그인이 비활성화되어 있습니다. `VITE_GOOGLE_ALLOWED_ORIGINS`와 Google Cloud Console의 Authorized JavaScript origins를 확인해 주세요.",
     scriptError: "Google 로그인 스크립트를 불러오지 못했습니다. 브라우저 확장 프로그램이나 네트워크를 확인해 주세요.",
@@ -31,9 +33,10 @@ const LOGIN_COPY = {
     backHome: "홈으로 돌아가기",
   },
   en: {
-    eyebrow: "Google OAuth",
+    eyebrow: "Login",
     title: "Keep your Paris travel data safely in one place.",
-    description: "Sign in with Google to save your trip plans, budget, stay and flight searches, and diary to your account.",
+    description: "Sign in to save your trip plans, budget, stay and flight searches, and diary to your account.",
+    staticDemoNotice: "This GitHub Pages deployment can use the demo account without a backend server.",
     missingClientId: "Set `VITE_GOOGLE_CLIENT_ID` to show the real Google sign-in button.",
     originBlocked:
       "Google sign-in is disabled on this origin. Check `VITE_GOOGLE_ALLOWED_ORIGINS` and the Authorized JavaScript origins in Google Cloud Console.",
@@ -66,7 +69,8 @@ export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const from = (location.state as LoginLocationState | null)?.from?.pathname ?? "/";
-  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const isStaticDemoAuth = isStaticDemoAuthEnabled();
+  const googleClientId = isStaticDemoAuth ? "" : import.meta.env.VITE_GOOGLE_CLIENT_ID;
   const googleAllowedOrigins = (import.meta.env.VITE_GOOGLE_ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((origin) => origin.trim())
@@ -189,7 +193,8 @@ export function LoginPage() {
         <h1>{copy.title}</h1>
         <p>{copy.description}</p>
         <div className="google-button-wrap" ref={googleButtonRef}>
-          {!googleClientId ? <span>{copy.missingClientId}</span> : null}
+          {isStaticDemoAuth ? <span>{copy.staticDemoNotice}</span> : null}
+          {!isStaticDemoAuth && !googleClientId ? <span>{copy.missingClientId}</span> : null}
           {googleClientId && !isGoogleOriginAllowed ? <span>{copy.originBlocked}</span> : null}
         </div>
         <button type="button" className="primary-button full-width" onClick={handleDemoLogin} disabled={isSubmitting}>

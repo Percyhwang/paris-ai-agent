@@ -1,4 +1,5 @@
 import { apiRequest } from "./apiClient";
+import { isStaticDemoAuthEnabled, updateStaticDemoUser } from "./staticDemoAuth";
 import type { User, UserPreferences } from "../types";
 
 type UserUpdatePayload = {
@@ -9,6 +10,10 @@ type UserUpdatePayload = {
 
 export const userService = {
   updateMe(payload: UserUpdatePayload): Promise<User> {
+    if (isStaticDemoAuthEnabled()) {
+      return Promise.resolve(updateStaticDemoUser(payload));
+    }
+
     return apiRequest<User>("/users/me", {
       method: "PATCH",
       body: JSON.stringify(payload),
