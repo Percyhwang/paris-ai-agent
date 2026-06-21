@@ -225,6 +225,21 @@ jobs:
           write_env KIWI_RAPIDAPI_HOST "${KIWI_RAPIDAPI_HOST:-kiwi-com-flights-api.p.rapidapi.com}"
           write_env BOOKING_RAPIDAPI_HOST "${BOOKING_RAPIDAPI_HOST:-booking-com15.p.rapidapi.com}"
 
+      - name: Connect WireGuard VPN
+        if: steps.deploy_secrets.outputs.ready == 'true' && secrets.WG_CONFIG != ''
+        env:
+          WG_CONFIG: ${{ secrets.WG_CONFIG }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools
+          sudo mkdir -p /etc/wireguard
+          printf '%s\n' "${WG_CONFIG}" | sudo tee /etc/wireguard/deploy.conf > /dev/null
+          sudo chmod 600 /etc/wireguard/deploy.conf
+          sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
+          sudo wg-quick up deploy
+          sudo wg show deploy
+
       - name: Install SSH key
         if: steps.deploy_secrets.outputs.ready == 'true'
         env:
