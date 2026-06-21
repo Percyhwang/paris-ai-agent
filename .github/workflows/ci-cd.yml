@@ -116,6 +116,11 @@ jobs:
         run: |
           port="${DEPLOY_PORT:-22}"
 
+          if nc -z -w 3 "$DEPLOY_HOST" "$port"; then
+            echo "SSH is already reachable on $DEPLOY_HOST:$port without WireGuard."
+            exit 0
+          fi
+
           if [ -z "${WG_CONFIG:-}" ]; then
             echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set."
             exit 0
