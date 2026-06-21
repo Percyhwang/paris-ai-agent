@@ -154,6 +154,7 @@ jobs:
       - name: Build frontend for GitHub Pages
         working-directory: frontend
         env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
           PUBLIC_API_BASE_URL: ${{ secrets.PUBLIC_API_BASE_URL }}
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
@@ -162,10 +163,69 @@ jobs:
           VITE_HOME_BACKGROUND_URL: ${{ secrets.VITE_HOME_BACKGROUND_URL }}
           VITE_STATIC_DEMO_AUTH: "false"
         run: |
-          export VITE_API_BASE_URL="${PUBLIC_API_BASE_URL:-${FRONTEND_ORIGIN%/}/api}"
-          if [ -z "${VITE_API_BASE_URL}" ] || [ "${VITE_API_BASE_URL}" = "/api" ]; then
-            export VITE_API_BASE_URL="https://paris-ai-agent.onrender.com/api"
+          looks_public_https_origin() {
+            local value="${1:-}"
+            local candidate host_port host
+
+            value="${value%%,*}"
+            [ -n "$value" ] || return 1
+
+            if [ "${value#https://}" != "$value" ]; then
+              candidate="$value"
+            elif [ "${value#http://}" != "$value" ]; then
+              return 1
+            else
+              candidate="https://${value}"
+            fi
+
+            host_port="${candidate#https://}"
+            host_port="${host_port%%/*}"
+            host="${host_port%%:*}"
+
+            [ -n "$host" ] || return 1
+            [ "$host" != "localhost" ] || return 1
+            case "$host" in
+              *.local) return 1 ;;
+              10.*|127.*|0.*|169.254.*|192.168.*) return 1 ;;
+              172.16.*|172.17.*|172.18.*|172.19.*|172.2?.*|172.30.*|172.31.*) return 1 ;;
+              \[*\]) return 1 ;;
+            esac
+
+            return 0
+          }
+
+          normalize_api_base() {
+            local value="$1"
+            if [ -z "$value" ]; then
+              return 1
+            fi
+
+            local normalized
+            if [ "${value#http://}" != "$value" ] || [ "${value#https://}" != "$value" ]; then
+              normalized="${value%/}"
+            else
+              normalized="https://${value%/}"
+            fi
+
+            case "$normalized" in
+              */api) printf '%s\n' "$normalized" ;;
+              *) printf '%s/api\n' "$normalized" ;;
+            esac
+          }
+
+          selected_api_base=""
+          if looks_public_https_origin "${PUBLIC_API_BASE_URL:-}"; then
+            selected_api_base="$(normalize_api_base "${PUBLIC_API_BASE_URL}")"
+          elif looks_public_https_origin "${FRONTEND_ORIGIN:-}"; then
+            selected_api_base="$(normalize_api_base "${FRONTEND_ORIGIN}")"
+          elif looks_public_https_origin "${DEPLOY_HOST:-}"; then
+            selected_api_base="$(normalize_api_base "${DEPLOY_HOST}")"
+          else
+            selected_api_base="https://paris-ai-agent.onrender.com/api"
           fi
+
+          export VITE_API_BASE_URL="${selected_api_base}"
+          echo "GitHub Pages API base: ${VITE_API_BASE_URL}"
           npm ci
           npm run build -- --base=/paris-ai-agent/
 
