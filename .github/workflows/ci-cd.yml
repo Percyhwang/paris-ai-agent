@@ -61,13 +61,24 @@ jobs:
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         run: |
           missing=0
+          missing_names=""
           for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_PATH GHCR_READ_TOKEN; do
             if [ -z "${!name}" ]; then
               echo "::notice title=CD skipped::$name secret is not configured."
               missing=1
+              missing_names="${missing_names}${name} "
             fi
           done
           echo "missing=$missing" >> "$GITHUB_OUTPUT"
+          echo "missing_names=${missing_names% }" >> "$GITHUB_OUTPUT"
+
+      - name: Fail when deployment secrets are missing
+        if: steps.secrets_check.outputs.missing != '0'
+        run: |
+          echo "Server deployment could not start because required GitHub secrets are missing." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Missing secrets: ${{ steps.secrets_check.outputs.missing_names }}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Prepare SSH key
         if: steps.secrets_check.outputs.missing == '0'
