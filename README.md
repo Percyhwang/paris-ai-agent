@@ -89,21 +89,18 @@ npm run dev
 
 ## CI/CD
 
-이 저장소는 GitHub Actions 기반 `CI/CD` 파이프라인을 포함합니다.
+이 저장소는 GitHub Actions 기반 배포 흐름을 포함합니다.
 
-- CI
-  - `pull_request`와 모든 `push`에서 자동 실행
-  - Python deterministic test 실행
-  - Frontend build 검증
-  - Backend/Frontend Docker image build 검증
-  - MongoDB까지 포함한 full stack smoke test 실행
-- CD
-  - `main` 브랜치 push 시 자동 실행
-  - Backend/Frontend 이미지를 `GHCR`에 publish
-  - 배포 서버 SSH secret이 설정되어 있으면 Frontend + Backend + MongoDB 스택을 원격 서버에서 `docker compose pull && up -d`로 자동 갱신
+- 기존 `deploy.yml`
+  - `main` 브랜치 push 시 테스트, 이미지 publish, GitHub Pages 배포 수행
+- 새 `ci-cd.yml`
+  - 기존 `CI/CD` 워크플로가 성공하면 자동 실행
+  - Frontend + Backend + MongoDB 스택을 원격 서버에서 `docker compose pull && up -d`로 갱신
+  - 필요하면 `workflow_dispatch`로 수동 재배포 가능
 
 워크플로 파일:
 
+- `.github/workflows/deploy.yml`
 - `.github/workflows/ci-cd.yml`
 
 배포용 파일:
