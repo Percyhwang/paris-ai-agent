@@ -226,11 +226,16 @@ jobs:
           write_env BOOKING_RAPIDAPI_HOST "${BOOKING_RAPIDAPI_HOST:-booking-com15.p.rapidapi.com}"
 
       - name: Connect WireGuard VPN
-        if: steps.deploy_secrets.outputs.ready == 'true' && secrets.WG_CONFIG != ''
+        if: steps.deploy_secrets.outputs.ready == 'true'
         env:
           WG_CONFIG: ${{ secrets.WG_CONFIG }}
         shell: bash
         run: |
+          if [ -z "${WG_CONFIG}" ]; then
+            echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set."
+            exit 0
+          fi
+
           sudo apt-get update
           sudo apt-get install -y wireguard-tools
           sudo mkdir -p /etc/wireguard
