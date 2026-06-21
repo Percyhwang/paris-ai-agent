@@ -228,6 +228,7 @@ jobs:
       - name: Connect WireGuard VPN
         if: steps.deploy_secrets.outputs.ready == 'true'
         env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           WG_CONFIG: ${{ secrets.WG_CONFIG }}
         shell: bash
         run: |
@@ -237,13 +238,27 @@ jobs:
           fi
 
           sudo apt-get update
-          sudo apt-get install -y wireguard-tools
+          sudo apt-get install -y iputils-ping netcat-openbsd wireguard-tools
           sudo mkdir -p /etc/wireguard
           printf '%s\n' "${WG_CONFIG}" | sudo tee /etc/wireguard/deploy.conf > /dev/null
           sudo chmod 600 /etc/wireguard/deploy.conf
           sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
           sudo wg-quick up deploy
           sudo wg show deploy
+
+          for attempt in {1..12}; do
+            if nc -z -w 3 "${DEPLOY_HOST}" 22; then
+              echo "SSH is reachable on ${DEPLOY_HOST}:22"
+              exit 0
+            fi
+            echo "Waiting for SSH on ${DEPLOY_HOST}:22 (${attempt}/12)"
+            ping -c 1 -W 2 "${DEPLOY_HOST}" || true
+            sleep 5
+          done
+
+          sudo wg show deploy
+          echo "::error::SSH was not reachable on ${DEPLOY_HOST}:22 after WireGuard setup."
+          exit 1
 
       - name: Install SSH key
         if: steps.deploy_secrets.outputs.ready == 'true'
@@ -255,7 +270,13 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+          {
+            echo "Host *"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  ConnectTimeout 20"
+            echo "  ServerAliveInterval 15"
+          } >> ~/.ssh/config
+          ssh-keyscan -T 20 -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts || true
 
       - name: Upload Compose files
         if: steps.deploy_secrets.outputs.ready == 'true'
