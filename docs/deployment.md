@@ -1,38 +1,38 @@
 # CI/CD 배포 설정
 
-이 저장소는 GitHub Actions로 테스트, Docker 이미지 발행, Docker 서버 배포를 수행하도록 구성되어 있습니다.
+이 저장소는 GitHub Actions로 테스트, Docker 이미지 빌드, GHCR 푸시, Docker 호스트 배포를 수행합니다.
 
 ## 동작 방식
 
-- `main` 브랜치에 push되거나 Actions에서 수동 실행하면 `CI/CD` 워크플로가 실행됩니다.
-- 프론트엔드는 `npm ci`와 `npm run build`로 검증합니다.
-- 백엔드와 `parser_api`는 `unittest` discovery로 검증합니다.
-- 검증이 끝나면 backend/frontend Docker 이미지를 GHCR에 발행합니다.
-- SSH 배포용 GitHub Secrets가 있으면 원격 서버에서 `docker-compose.prod.yml`을 pull/up 합니다.
-- SSH 배포용 Secrets가 없으면 이미지 발행까지만 수행하고 배포 단계는 건너뜁니다.
+- `main` 브랜치에 push하거나 Actions에서 수동 실행하면 `CI/CD` workflow가 실행됩니다.
+- frontend는 `npm ci`와 `npm run build`로 검증합니다.
+- backend와 parser API는 `unittest`로 검증합니다.
+- 검증이 끝나면 backend/frontend Docker 이미지를 GitHub Container Registry(GHCR)에 push합니다.
+- 배포 단계는 `DEPLOY_HOST`로 SSH 접속해 `docker-compose.prod.yml`을 pull/up 합니다.
+- `WG_CONFIG` Secret이 있으면 먼저 WireGuard VPN을 올린 뒤 SSH 접속을 시도합니다.
 
 ## 필수 GitHub Secrets
 
-서버 배포까지 자동화하려면 repository Settings > Secrets and variables > Actions에 아래 값을 추가합니다.
+Repository Settings > Secrets and variables > Actions에 아래 값을 등록해야 합니다.
 
-- `DEPLOY_HOST`: Docker가 설치된 서버 주소
-- `DEPLOY_USER`: SSH 접속 사용자
-- `DEPLOY_SSH_KEY`: 위 사용자의 private key
+- `DEPLOY_HOST`: Docker 배포 서버 주소입니다. 예: `10.0.0.1` 또는 `ssh.example.com`
+- `DEPLOY_USER`: SSH 접속 사용자입니다.
+- `DEPLOY_SSH_KEY`: 해당 사용자로 접속 가능한 private key입니다.
 
-서버 사용자는 `docker compose`를 실행할 수 있어야 합니다.
+## 선택 GitHub Secrets
 
-## 권장 Secrets
+- `DEPLOY_PORT`: SSH 포트입니다. 비워두면 `22`를 사용합니다.
+- `DEPLOY_PATH`: 서버의 배포 경로입니다. 비워두면 `/opt/paris-ai-agent`를 사용합니다.
+- `WG_CONFIG`: WireGuard를 통해 서버에 접속해야 할 때 사용하는 클라이언트 설정입니다.
+- `FRONTEND_PORT`: 외부에 공개할 frontend 포트입니다. 비워두면 `80`을 사용합니다.
+- `BACKEND_PORT`: backend 포트 바인딩입니다. 비워두면 `127.0.0.1:8010`을 사용합니다.
+- `FRONTEND_ORIGIN`: 실제 frontend origin입니다. 예: `http://10.0.0.1:4173`
+- `GHCR_USERNAME`: private GHCR 이미지를 pull할 사용자명입니다.
+- `GHCR_TOKEN`: `read:packages` 권한이 있는 토큰입니다.
 
-- `DEPLOY_PATH`: 서버 배포 경로. 기본값은 `/opt/paris-ai-agent`
-- `FRONTEND_PORT`: 외부 공개 포트. 기본값은 `80`
-- `BACKEND_PORT`: backend 직접 접근 포트. 기본값은 `127.0.0.1:8010`
-- `FRONTEND_ORIGIN`: 실제 프론트엔드 origin. 비워두면 `http://DEPLOY_HOST`
-- `GHCR_USERNAME`: private GHCR package를 pull할 사용자
-- `GHCR_TOKEN`: `read:packages` 권한이 있는 token
+## 애플리케이션 환경 Secrets
 
-## 앱 환경 변수 Secrets
-
-필요한 API만 채우면 됩니다. 비워둔 값은 코드의 fallback 또는 비활성 상태로 동작합니다.
+필요한 API만 채우면 됩니다. 비어 있는 값은 코드의 fallback 또는 비활성 상태로 동작합니다.
 
 - `VITE_GOOGLE_CLIENT_ID`
 - `VITE_GOOGLE_ALLOWED_ORIGINS`
@@ -55,4 +55,16 @@
 - `KIWI_RAPIDAPI_HOST`
 - `BOOKING_RAPIDAPI_HOST`
 
-`JWT_PRIVATE_KEY`와 `JWT_PUBLIC_KEY`는 줄바꿈을 `\n`으로 치환한 한 줄 문자열로 저장할 수 있습니다.
+`JWT_PRIVATE_KEY`와 `JWT_PUBLIC_KEY`는 줄바꿈을 `\n`으로 치환한 문자열로 저장해도 됩니다.
+
+## 현재 배포 실패를 확인하는 방법
+
+배포 job에서 WireGuard가 올라간 뒤 `transfer: 0 B received`가 보이거나 `SSH was not reachable`가 나오면 GitHub Actions 문제가 아니라 배포 서버 네트워크 문제입니다.
+
+이 경우 서버에서 아래를 확인해야 합니다.
+
+- WireGuard 서버가 실행 중이고 UDP `51820`이 열려 있는지
+- 서버 WireGuard 설정에 GitHub Actions용 peer가 등록되어 있는지
+- 서버에서 `10.0.0.1` 같은 내부 VPN 주소가 실제로 붙어 있는지
+- `sshd`가 실행 중이고 `DEPLOY_PORT`로 접속 가능한지
+- 방화벽이 VPN 클라이언트에서 SSH 포트로 들어오는 연결을 허용하는지

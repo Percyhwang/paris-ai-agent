@@ -146,6 +146,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
         shell: bash
         run: |
           missing=()
@@ -159,6 +160,7 @@ jobs:
             echo "::notice::Skipping SSH deploy. Missing GitHub Secrets: ${missing[*]}"
             echo "ready=false" >> "${GITHUB_OUTPUT}"
           else
+            echo "::notice::SSH deploy target is configured on port ${DEPLOY_PORT:-22}."
             echo "ready=true" >> "${GITHUB_OUTPUT}"
           fi
 
@@ -229,9 +231,12 @@ jobs:
         if: steps.deploy_secrets.outputs.ready == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           WG_CONFIG: ${{ secrets.WG_CONFIG }}
         shell: bash
         run: |
+          deploy_port="${DEPLOY_PORT:-22}"
+
           if [ -z "${WG_CONFIG}" ]; then
             echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set."
             exit 0
@@ -247,26 +252,28 @@ jobs:
           sudo wg show deploy
 
           for attempt in {1..12}; do
-            if nc -z -w 3 "${DEPLOY_HOST}" 22; then
-              echo "SSH is reachable on ${DEPLOY_HOST}:22"
+            if nc -z -w 3 "${DEPLOY_HOST}" "${deploy_port}"; then
+              echo "SSH is reachable on ${DEPLOY_HOST}:${deploy_port}"
               exit 0
             fi
-            echo "Waiting for SSH on ${DEPLOY_HOST}:22 (${attempt}/12)"
+            echo "Waiting for SSH on ${DEPLOY_HOST}:${deploy_port} (${attempt}/12)"
             ping -c 1 -W 2 "${DEPLOY_HOST}" || true
             sleep 5
           done
 
           sudo wg show deploy
-          echo "::error::SSH was not reachable on ${DEPLOY_HOST}:22 after WireGuard setup."
+          echo "::error::SSH was not reachable on ${DEPLOY_HOST}:${deploy_port} after WireGuard setup."
           exit 1
 
       - name: Install SSH key
         if: steps.deploy_secrets.outputs.ready == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         shell: bash
         run: |
+          deploy_port="${DEPLOY_PORT:-22}"
           mkdir -p ~/.ssh
           printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
@@ -276,24 +283,27 @@ jobs:
             echo "  ConnectTimeout 20"
             echo "  ServerAliveInterval 15"
           } >> ~/.ssh/config
-          ssh-keyscan -T 20 -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts || true
+          ssh-keyscan -T 20 -p "${deploy_port}" -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts || true
 
       - name: Upload Compose files
         if: steps.deploy_secrets.outputs.ready == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         shell: bash
         run: |
           app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${app_dir}'"
-          scp docker-compose.prod.yml .env.production "${DEPLOY_USER}@${DEPLOY_HOST}:${app_dir}/"
+          deploy_port="${DEPLOY_PORT:-22}"
+          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${app_dir}'"
+          scp -P "${deploy_port}" docker-compose.prod.yml .env.production "${DEPLOY_USER}@${DEPLOY_HOST}:${app_dir}/"
 
       - name: Run remote deployment
         if: steps.deploy_secrets.outputs.ready == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
@@ -301,12 +311,13 @@ jobs:
         shell: bash
         run: |
           app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
+          deploy_port="${DEPLOY_PORT:-22}"
 
           if [ -n "${GHCR_TOKEN}" ]; then
-            printf '%s' "${GHCR_TOKEN}" | ssh "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            printf '%s' "${GHCR_TOKEN}" | ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
               "docker login ghcr.io -u '${GHCR_USERNAME:-${GITHUB_ACTOR}}' --password-stdin"
           fi
 
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "cd '${app_dir}' && docker compose --env-file .env.production -f docker-compose.prod.yml pull"
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "cd '${app_dir}' && docker compose --env-file .env.production -f docker-compose.prod.yml up -d"
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "docker image prune -f"
+          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "cd '${app_dir}' && docker compose --env-file .env.production -f docker-compose.prod.yml pull"
+          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "cd '${app_dir}' && docker compose --env-file .env.production -f docker-compose.prod.yml up -d"
+          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "docker image prune -f"
