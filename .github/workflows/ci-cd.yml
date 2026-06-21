@@ -131,9 +131,20 @@ jobs:
           sudo mkdir -p /etc/wireguard
           printf '%s\n' "$WG_CONFIG" | sudo tee /etc/wireguard/deploy.conf > /dev/null
           sudo chmod 600 /etc/wireguard/deploy.conf
-          sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
+
+          case "$DEPLOY_HOST" in
+            ''|*[!0-9.:]*)
+              echo "Keeping WireGuard DNS entries because DEPLOY_HOST may require hostname resolution."
+              ;;
+            *)
+              echo "DEPLOY_HOST looks like a literal IP. Removing WireGuard DNS overrides."
+              sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
+              ;;
+          esac
+
           sudo wg-quick up deploy
           sudo wg show deploy
+          getent hosts "$DEPLOY_HOST" || true
 
           for attempt in $(seq 1 12); do
             if nc -z -w 3 "$DEPLOY_HOST" "$port"; then
