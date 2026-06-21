@@ -39,7 +39,8 @@ export function PlaceDetailModal({ place, onClose, onAddToPlan }: PlaceDetailMod
   if (!place) return null;
 
   const tips = place.photo_spot_tips?.length ? place.photo_spot_tips : [copy.emptyTip];
-  const imageUrl = place.image_url || "/images/paris-default-hero.jpeg";
+  const fallbackImageUrl = `${import.meta.env.BASE_URL}images/paris-default-hero.jpeg`;
+  const imageUrl = place.image_url || fallbackImageUrl;
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
@@ -53,7 +54,7 @@ export function PlaceDetailModal({ place, onClose, onAddToPlan }: PlaceDetailMod
             src={imageUrl}
             alt={place.name}
             onError={(event) => {
-              event.currentTarget.src = "/images/paris-default-hero.jpeg";
+              event.currentTarget.src = fallbackImageUrl;
             }}
           />
         </div>

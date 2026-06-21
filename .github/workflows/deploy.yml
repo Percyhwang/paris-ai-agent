@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
   packages: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: paris-ai-agent-${{ github.ref }}
@@ -131,193 +133,44 @@ jobs:
           docker push "${FRONTEND_IMAGE}:latest"
 
   deploy:
-    name: Deploy to Docker host
+    name: Deploy frontend to GitHub Pages
     runs-on: ubuntu-latest
     needs: docker
-    environment: production
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check deployment secrets
-        id: deploy_secrets
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend for GitHub Pages
+        working-directory: frontend
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-        shell: bash
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_ALLOWED_ORIGINS: ${{ secrets.VITE_GOOGLE_ALLOWED_ORIGINS }}
+          VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
+          VITE_HOME_BACKGROUND_URL: ${{ secrets.VITE_HOME_BACKGROUND_URL }}
         run: |
-          missing=()
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY; do
-            if [ -z "${!name}" ]; then
-              missing+=("${name}")
-            fi
-          done
+          npm ci
+          npm run build -- --base=/paris-ai-agent/
 
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::notice::Skipping SSH deploy. Missing GitHub Secrets: ${missing[*]}"
-            echo "ready=false" >> "${GITHUB_OUTPUT}"
-          else
-            echo "::notice::SSH deploy target is configured on port ${DEPLOY_PORT:-22}."
-            echo "ready=true" >> "${GITHUB_OUTPUT}"
-          fi
+      - name: Set up GitHub Pages
+        uses: actions/configure-pages@v5
 
-      - name: Create production env file
-        if: steps.deploy_secrets.outputs.ready == 'true'
-        env:
-          IMAGE_NAMESPACE: ${{ needs.docker.outputs.image_namespace }}
-          IMAGE_TAG: ${{ github.sha }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
-          FRONTEND_PORT: ${{ secrets.FRONTEND_PORT }}
-          BACKEND_PORT: ${{ secrets.BACKEND_PORT }}
-          MONGODB_DB: ${{ secrets.MONGODB_DB }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          ENABLE_GOOGLE_FOOD_SEARCH: ${{ secrets.ENABLE_GOOGLE_FOOD_SEARCH }}
-          GOOGLE_ROUTES_API_KEY: ${{ secrets.GOOGLE_ROUTES_API_KEY }}
-          JWT_PRIVATE_KEY: ${{ secrets.JWT_PRIVATE_KEY }}
-          JWT_PUBLIC_KEY: ${{ secrets.JWT_PUBLIC_KEY }}
-          ACCESS_TOKEN_EXPIRE_MINUTES: ${{ secrets.ACCESS_TOKEN_EXPIRE_MINUTES }}
-          REFRESH_TOKEN_EXPIRE_DAYS: ${{ secrets.REFRESH_TOKEN_EXPIRE_DAYS }}
-          WEATHER_API_URL: ${{ secrets.WEATHER_API_URL }}
-          WEATHER_CACHE_TTL_MINUTES: ${{ secrets.WEATHER_CACHE_TTL_MINUTES }}
-          EXTERNAL_AGENT_API_URL: ${{ secrets.EXTERNAL_AGENT_API_URL }}
-          LLM_DIARY_API_URL: ${{ secrets.LLM_DIARY_API_URL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-          KIWI_RAPIDAPI_HOST: ${{ secrets.KIWI_RAPIDAPI_HOST }}
-          BOOKING_RAPIDAPI_HOST: ${{ secrets.BOOKING_RAPIDAPI_HOST }}
-        shell: bash
-        run: |
-          write_env() {
-            local key="$1"
-            local value="${2:-}"
-            value="${value//$'\r'/}"
-            value="${value//$'\n'/\\n}"
-            printf '%s=%s\n' "${key}" "${value}" >> .env.production
-          }
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
 
-          : > .env.production
-          write_env IMAGE_NAMESPACE "${IMAGE_NAMESPACE}"
-          write_env IMAGE_TAG "${IMAGE_TAG}"
-          write_env APP_ENV "production"
-          write_env FRONTEND_ORIGIN "${FRONTEND_ORIGIN:-http://${DEPLOY_HOST}}"
-          write_env FRONTEND_PORT "${FRONTEND_PORT:-80}"
-          write_env BACKEND_PORT "${BACKEND_PORT:-127.0.0.1:8010}"
-          write_env MONGODB_URI "mongodb://mongo:27017"
-          write_env MONGODB_DB "${MONGODB_DB:-paris_ai_agent}"
-          write_env GOOGLE_CLIENT_ID "${GOOGLE_CLIENT_ID}"
-          write_env GOOGLE_PLACES_API_KEY "${GOOGLE_PLACES_API_KEY}"
-          write_env ENABLE_GOOGLE_FOOD_SEARCH "${ENABLE_GOOGLE_FOOD_SEARCH:-true}"
-          write_env GOOGLE_ROUTES_API_KEY "${GOOGLE_ROUTES_API_KEY}"
-          write_env JWT_PRIVATE_KEY "${JWT_PRIVATE_KEY}"
-          write_env JWT_PUBLIC_KEY "${JWT_PUBLIC_KEY}"
-          write_env ACCESS_TOKEN_EXPIRE_MINUTES "${ACCESS_TOKEN_EXPIRE_MINUTES:-30}"
-          write_env REFRESH_TOKEN_EXPIRE_DAYS "${REFRESH_TOKEN_EXPIRE_DAYS:-14}"
-          write_env ALLOW_INSECURE_DEV_AUTH "false"
-          write_env WEATHER_API_URL "${WEATHER_API_URL}"
-          write_env WEATHER_CACHE_TTL_MINUTES "${WEATHER_CACHE_TTL_MINUTES:-30}"
-          write_env EXTERNAL_AGENT_API_URL "${EXTERNAL_AGENT_API_URL}"
-          write_env LLM_DIARY_API_URL "${LLM_DIARY_API_URL}"
-          write_env OPENAI_API_KEY "${OPENAI_API_KEY}"
-          write_env RAPIDAPI_KEY "${RAPIDAPI_KEY}"
-          write_env KIWI_RAPIDAPI_HOST "${KIWI_RAPIDAPI_HOST:-kiwi-com-flights-api.p.rapidapi.com}"
-          write_env BOOKING_RAPIDAPI_HOST "${BOOKING_RAPIDAPI_HOST:-booking-com15.p.rapidapi.com}"
-
-      - name: Connect WireGuard VPN
-        if: steps.deploy_secrets.outputs.ready == 'true'
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          WG_CONFIG: ${{ secrets.WG_CONFIG }}
-        shell: bash
-        run: |
-          deploy_port="${DEPLOY_PORT:-22}"
-
-          if [ -z "${WG_CONFIG}" ]; then
-            echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set."
-            exit 0
-          fi
-
-          sudo apt-get update
-          sudo apt-get install -y iputils-ping netcat-openbsd wireguard-tools
-          sudo mkdir -p /etc/wireguard
-          printf '%s\n' "${WG_CONFIG}" | sudo tee /etc/wireguard/deploy.conf > /dev/null
-          sudo chmod 600 /etc/wireguard/deploy.conf
-          sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
-          sudo wg-quick up deploy
-          sudo wg show deploy
-
-          for attempt in {1..12}; do
-            if nc -z -w 3 "${DEPLOY_HOST}" "${deploy_port}"; then
-              echo "SSH is reachable on ${DEPLOY_HOST}:${deploy_port}"
-              exit 0
-            fi
-            echo "Waiting for SSH on ${DEPLOY_HOST}:${deploy_port} (${attempt}/12)"
-            ping -c 1 -W 2 "${DEPLOY_HOST}" || true
-            sleep 5
-          done
-
-          sudo wg show deploy
-          echo "::error::SSH was not reachable on ${DEPLOY_HOST}:${deploy_port} after WireGuard setup."
-          exit 1
-
-      - name: Install SSH key
-        if: steps.deploy_secrets.outputs.ready == 'true'
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        shell: bash
-        run: |
-          deploy_port="${DEPLOY_PORT:-22}"
-          mkdir -p ~/.ssh
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          {
-            echo "Host *"
-            echo "  StrictHostKeyChecking accept-new"
-            echo "  ConnectTimeout 20"
-            echo "  ServerAliveInterval 15"
-          } >> ~/.ssh/config
-          ssh-keyscan -T 20 -p "${deploy_port}" -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts || true
-
-      - name: Upload Compose files
-        if: steps.deploy_secrets.outputs.ready == 'true'
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        shell: bash
-        run: |
-          app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
-          deploy_port="${DEPLOY_PORT:-22}"
-          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${app_dir}'"
-          scp -P "${deploy_port}" docker-compose.prod.yml .env.production "${DEPLOY_USER}@${DEPLOY_HOST}:${app_dir}/"
-
-      - name: Run remote deployment
-        if: steps.deploy_secrets.outputs.ready == 'true'
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        shell: bash
-        run: |
-          app_dir="${DEPLOY_PATH:-/opt/paris-ai-agent}"
-          deploy_port="${DEPLOY_PORT:-22}"
-
-          if [ -n "${GHCR_TOKEN}" ]; then
-            printf '%s' "${GHCR_TOKEN}" | ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "docker login ghcr.io -u '${GHCR_USERNAME:-${GITHUB_ACTOR}}' --password-stdin"
-          fi
-
-          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "cd '${app_dir}' && docker compose --env-file .env.production -f docker-compose.prod.yml pull"
-          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "cd '${app_dir}' && docker compose --env-file .env.production -f docker-compose.prod.yml up -d"
-          ssh -p "${deploy_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "docker image prune -f"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

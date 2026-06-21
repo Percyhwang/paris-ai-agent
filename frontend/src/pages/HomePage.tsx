@@ -5,7 +5,7 @@ import { useAuth } from "../store/AuthContext";
 import { useLanguage } from "../store/LanguageContext";
 import type { Trip, TripGenerationJob } from "../types";
 
-const DEFAULT_HERO_IMAGE = "/images/paris-sunset-hero.png";
+const DEFAULT_HERO_IMAGE = `${import.meta.env.BASE_URL}images/paris-sunset-hero.png`;
 const GENERATION_POLL_INTERVAL_MS = 2000;
 const GENERATION_MAX_POLLS = 180;
 

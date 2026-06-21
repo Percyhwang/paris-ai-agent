@@ -9,7 +9,8 @@ type PlaceCardProps = {
 
 export function PlaceCard({ place, onSelect }: PlaceCardProps) {
   const { language } = useLanguage();
-  const imageUrl = place.image_url || "/images/paris-default-hero.jpeg";
+  const fallbackImageUrl = `${import.meta.env.BASE_URL}images/paris-default-hero.jpeg`;
+  const imageUrl = place.image_url || fallbackImageUrl;
 
   return (
     <article className="place-card" onClick={() => onSelect(place)} role="button" tabIndex={0} onKeyDown={(event) => {
@@ -24,7 +25,7 @@ export function PlaceCard({ place, onSelect }: PlaceCardProps) {
           alt={place.name}
           loading="lazy"
           onError={(event) => {
-            event.currentTarget.src = "/images/paris-default-hero.jpeg";
+            event.currentTarget.src = fallbackImageUrl;
           }}
         />
       </div>
