@@ -108,26 +108,66 @@ jobs:
           ssh-keyscan -T 20 -p "$port" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts || true
 
       - name: Connect WireGuard VPN
+        id: network
+        continue-on-error: true
         if: steps.secrets_check.outputs.missing == '0'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           WG_CONFIG: ${{ secrets.WG_CONFIG }}
         run: |
+          set -u
           port="${DEPLOY_PORT:-22}"
+          ssh_ready="false"
+          used_wireguard="false"
+          retried_without_dns="false"
 
-          if nc -z -w 3 "$DEPLOY_HOST" "$port"; then
+          probe_ssh_port() {
+            nc -z -w 5 "$DEPLOY_HOST" "$port"
+          }
+
+          probe_ssh_login() {
+            ssh \
+              -o BatchMode=yes \
+              -o PreferredAuthentications=publickey \
+              -o PasswordAuthentication=no \
+              -o ConnectTimeout=15 \
+              -p "$port" \
+              "$DEPLOY_USER@$DEPLOY_HOST" "echo ssh-ok" < /dev/null
+          }
+
+          log_network_state() {
+            echo "DEPLOY_HOST=$DEPLOY_HOST"
+            echo "DEPLOY_PORT=$port"
+            echo "Host resolution:"
+            getent hosts "$DEPLOY_HOST" || true
+            echo "IP routes:"
+            ip route || true
+          }
+
+          echo "Initial connectivity probe"
+          log_network_state
+
+          if probe_ssh_port && probe_ssh_login; then
             echo "SSH is already reachable on $DEPLOY_HOST:$port without WireGuard."
+            ssh_ready="true"
+            echo "ssh_ready=$ssh_ready" >> "$GITHUB_OUTPUT"
+            echo "used_wireguard=$used_wireguard" >> "$GITHUB_OUTPUT"
+            echo "retried_without_dns=$retried_without_dns" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [ -z "${WG_CONFIG:-}" ]; then
-            echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set."
+            echo "::notice::Skipping WireGuard setup. WG_CONFIG is not set and direct SSH probe failed."
+            echo "ssh_ready=$ssh_ready" >> "$GITHUB_OUTPUT"
+            echo "used_wireguard=$used_wireguard" >> "$GITHUB_OUTPUT"
+            echo "retried_without_dns=$retried_without_dns" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           sudo apt-get update
-          sudo apt-get install -y iputils-ping netcat-openbsd wireguard-tools
+          sudo apt-get install -y dnsutils iproute2 iputils-ping netcat-openbsd wireguard-tools
           sudo mkdir -p /etc/wireguard
           printf '%s\n' "$WG_CONFIG" | sudo tee /etc/wireguard/deploy.conf > /dev/null
           sudo chmod 600 /etc/wireguard/deploy.conf
@@ -142,13 +182,30 @@ jobs:
               ;;
           esac
 
-          sudo wg-quick up deploy
-          sudo wg show deploy
-          getent hosts "$DEPLOY_HOST" || true
+          before_resolution="$(getent hosts "$DEPLOY_HOST" 2>/dev/null | head -n 1 || true)"
+          echo "Resolution before WireGuard: ${before_resolution:-<none>}"
+
+          if ! sudo wg-quick up deploy; then
+            echo "::warning::WireGuard setup failed before SSH probing."
+            echo "ssh_ready=$ssh_ready" >> "$GITHUB_OUTPUT"
+            echo "used_wireguard=$used_wireguard" >> "$GITHUB_OUTPUT"
+            echo "retried_without_dns=$retried_without_dns" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          used_wireguard="true"
+          sudo wg show deploy || true
+          after_resolution="$(getent hosts "$DEPLOY_HOST" 2>/dev/null | head -n 1 || true)"
+          echo "Resolution after WireGuard: ${after_resolution:-<none>}"
+          log_network_state
 
           for attempt in $(seq 1 12); do
-            if nc -z -w 3 "$DEPLOY_HOST" "$port"; then
-              echo "SSH is reachable on $DEPLOY_HOST:$port"
+            if probe_ssh_port && probe_ssh_login; then
+              echo "SSH is reachable on $DEPLOY_HOST:$port via WireGuard"
+              ssh_ready="true"
+              echo "ssh_ready=$ssh_ready" >> "$GITHUB_OUTPUT"
+              echo "used_wireguard=$used_wireguard" >> "$GITHUB_OUTPUT"
+              echo "retried_without_dns=$retried_without_dns" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "Waiting for SSH on $DEPLOY_HOST:$port ($attempt/12)"
@@ -156,8 +213,80 @@ jobs:
             sleep 5
           done
 
-          sudo wg show deploy
-          echo "::error::SSH was not reachable on $DEPLOY_HOST:$port after WireGuard setup."
+          case "$DEPLOY_HOST" in
+            ''|*[!0-9.:]*)
+              if grep -q '^[[:space:]]*DNS[[:space:]]*=' /etc/wireguard/deploy.conf; then
+                echo "Retrying WireGuard without DNS override for hostname-based DEPLOY_HOST."
+                retried_without_dns="true"
+                sudo wg-quick down deploy || true
+                sudo sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' /etc/wireguard/deploy.conf
+                if sudo wg-quick up deploy; then
+                  sudo wg show deploy || true
+                  log_network_state
+                  for attempt in $(seq 1 6); do
+                    if probe_ssh_port && probe_ssh_login; then
+                      echo "SSH became reachable after removing WireGuard DNS override."
+                      ssh_ready="true"
+                      echo "ssh_ready=$ssh_ready" >> "$GITHUB_OUTPUT"
+                      echo "used_wireguard=$used_wireguard" >> "$GITHUB_OUTPUT"
+                      echo "retried_without_dns=$retried_without_dns" >> "$GITHUB_OUTPUT"
+                      exit 0
+                    fi
+                    echo "Waiting for SSH after DNS override removal ($attempt/6)"
+                    sleep 5
+                  done
+                fi
+              fi
+              ;;
+          esac
+
+          sudo wg show deploy || true
+          echo "ssh_ready=$ssh_ready" >> "$GITHUB_OUTPUT"
+          echo "used_wireguard=$used_wireguard" >> "$GITHUB_OUTPUT"
+          echo "retried_without_dns=$retried_without_dns" >> "$GITHUB_OUTPUT"
+          echo "::warning::SSH was not reachable on $DEPLOY_HOST:$port after WireGuard probing."
+          exit 0
+
+      - name: Verify SSH reachability
+        if: steps.secrets_check.outputs.missing == '0'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+
+          probe_ssh_login() {
+            ssh \
+              -o BatchMode=yes \
+              -o PreferredAuthentications=publickey \
+              -o PasswordAuthentication=no \
+              -o ConnectTimeout=15 \
+              -p "$port" \
+              "$DEPLOY_USER@$DEPLOY_HOST" "echo ssh-ok" < /dev/null
+          }
+
+          if probe_ssh_login; then
+            echo "SSH verification succeeded for $DEPLOY_USER@$DEPLOY_HOST:$port"
+            {
+              echo "### Server deployment connectivity"
+              echo ""
+              echo "- SSH verification succeeded"
+              echo "- WireGuard used: ${{ steps.network.outputs.used_wireguard }}"
+              echo "- DNS override retry used: ${{ steps.network.outputs.retried_without_dns }}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "### Server deployment connectivity"
+            echo ""
+            echo "- SSH verification failed for \`$DEPLOY_USER@$DEPLOY_HOST:$port\`"
+            echo "- WireGuard used: ${{ steps.network.outputs.used_wireguard }}"
+            echo "- DNS override retry used: ${{ steps.network.outputs.retried_without_dns }}"
+            echo "- Check \`WG_CONFIG\`, \`DEPLOY_HOST\`, \`DEPLOY_PORT\`, and the server's SSH listener."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::SSH verification failed for $DEPLOY_USER@$DEPLOY_HOST:$port"
           exit 1
 
       - name: Create server runtime env
